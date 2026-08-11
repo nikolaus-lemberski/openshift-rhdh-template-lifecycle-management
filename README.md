@@ -13,37 +13,42 @@ A platform engineer publishes a Python Flask Software Template. Developers creat
 ```
 Platform Engineer                            Developer
       |                                          |
-      |  1. Push template + enable lifecycle      |
+      |  1. Push template + enable lifecycle     |
       |                                          |
       |                              2. Create app from template
       |                              3. Pipeline runs, app deploys
       |                              4. Develop (push, iterate)
       |                                          |
-      |  5. Update skeleton, bump version         |
-      |  6. Push updated template                 |
+      |  5. Update skeleton, bump version        |
+      |  6. Push updated template                |
       |                                          |
       |                              7. MR appears in app repo
       |                              8. Review and merge
 ```
 
+
+
 ## How it works
 
 Two fields wire up the lifecycle tracking:
 
-**`template.yaml`** carries a version annotation:
+`template.yaml` carries a version annotation:
+
 ```yaml
 metadata:
   annotations:
     backstage.io/template-version: "1.0.0"
 ```
 
-**`skeleton/catalog-info.yaml`** links each created entity back to its source template:
+`skeleton/catalog-info.yaml` links each created entity back to its source template:
+
 ```yaml
 spec:
   scaffoldedFrom: template:default/python-flask-app
 ```
 
 When the template version changes, the `scaffolder-relation-processor` plugin:
+
 1. Finds all catalog entities whose `spec.scaffoldedFrom` references this template
 2. Resolves each entity's source repository via the `backstage.io/managed-by-location` annotation (set automatically by the `catalog:register` step)
 3. Compares the current skeleton files against the repo contents
@@ -51,7 +56,11 @@ When the template version changes, the `scaffolder-relation-processor` plugin:
 
 ---
 
+
+
 ## Part 1 — Infrastructure Setup
+
+
 
 ### Prerequisites
 
@@ -60,6 +69,8 @@ When the template version changes, the `scaffolder-relation-processor` plugin:
 - The `rhdh/rhdh-templates` GitLab repo exists (created by the cluster bootstrap)
 - The `app-deployer` Helm chart is published in the GitLab Package Registry (`rhdh/helm-charts`)
 - `python3` and `curl` available locally
+
+
 
 ### 1. Push the template to GitLab
 
@@ -71,6 +82,7 @@ The script auto-detects cluster-specific values from the OpenShift API and repla
 ```
 
 What the script does:
+
 - Reads the cluster subdomain from `oc get ingresses.config.openshift.io cluster`
 - Retrieves the GitLab root token from the `root-user-personal-token` secret
 - Disables GitLab Auto DevOps at the instance level
@@ -88,14 +100,18 @@ GITLAB_TOKEN=glpat-xxxxxxxxxxxx \
 ./scripts/push-template.sh
 ```
 
-| Variable | Default (auto-detected) |
-|----------|------------------------|
-| `CLUSTER_SUBDOMAIN` | From `oc get ingresses.config.openshift.io cluster` |
-| `GITLAB_HOST` | `gitlab-gitlab.<CLUSTER_SUBDOMAIN>` |
-| `QUAY_HOST` | `quay.<CLUSTER_SUBDOMAIN>` |
-| `GITOPS_NAMESPACE` | `rhdh-gitops` |
-| `CHART_REPO_URL` | GitLab Package Registry URL for the `app-deployer` chart |
-| `GITLAB_TOKEN` | From `root-user-personal-token` secret in `gitlab` namespace |
+
+| Variable            | Default (auto-detected)                                      |
+| ------------------- | ------------------------------------------------------------ |
+| `CLUSTER_SUBDOMAIN` | From `oc get ingresses.config.openshift.io cluster`          |
+| `GITLAB_HOST`       | `gitlab-gitlab.<CLUSTER_SUBDOMAIN>`                          |
+| `QUAY_HOST`         | `quay.<CLUSTER_SUBDOMAIN>`                                   |
+| `GITOPS_NAMESPACE`  | `rhdh-gitops`                                                |
+| `CHART_REPO_URL`    | GitLab Package Registry URL for the `app-deployer` chart     |
+| `GITLAB_TOKEN`      | From `root-user-personal-token` secret in `gitlab` namespace |
+
+
+
 
 ### 2. Enable automated template lifecycle management
 
@@ -108,7 +124,7 @@ The script configures three things on the cluster:
 
 1. **Enables the plugin** — adds `backstage-community-plugin-catalog-backend-module-scaffolder-relation-processor-dynamic` (bundled but disabled by default) to the `dynamic-plugins` ConfigMap
 2. **Enables PR creation and notifications** — adds the following to the `app-config-rhdh` ConfigMap:
-   ```yaml
+  ```yaml
    scaffolder:
      pullRequests:
        templateUpdate:
@@ -116,15 +132,19 @@ The script configures three things on the cluster:
      notifications:
        templateUpdate:
          enabled: true
-   ```
+  ```
 3. **Prevents ArgoCD from reverting the changes** — if RHDH is managed by an ArgoCD Application, the script adds `ignoreDifferences` entries for both ConfigMaps so GitOps sync doesn't overwrite them
 4. **Restarts RHDH** and verifies the plugin loaded
 
-| Variable | Default |
-|----------|---------|
-| `RHDH_NAMESPACE` | `rhdh` |
-| `ARGOCD_APP_NAME` | `developer-hub-application` |
-| `ARGOCD_NAMESPACE` | `openshift-gitops` |
+
+| Variable           | Default                     |
+| ------------------ | --------------------------- |
+| `RHDH_NAMESPACE`   | `rhdh`                      |
+| `ARGOCD_APP_NAME`  | `developer-hub-application` |
+| `ARGOCD_NAMESPACE` | `openshift-gitops`          |
+
+
+
 
 ### 3. Verify in Developer Hub
 
@@ -132,25 +152,33 @@ Open RHDH at `https://backstage-developer-hub-rhdh.<CLUSTER_SUBDOMAIN>` and navi
 
 ---
 
+
+
 ## Part 2 — Demo Walkthrough
+
+
 
 ### Step 1: Create an application from the template
 
 1. Open Developer Hub and go to **Create**
 2. Select the **Python Flask Application** template
 3. Fill in:
-   - **Application Name**: e.g. `my-flask-app`
-   - **Owner**: select a group from the catalog
-   - **Image Organization**: leave as `parasol` (or your Quay org)
+  - **Application Name**: e.g. `my-flask-app`
+  - **Owner**: select a group from the catalog
+  - **Image Organization**: leave as `parasol` (or your Quay org)
 4. Click **Create**
 
 The template scaffolds two GitLab repositories and bootstraps ArgoCD:
 
-| What | Where |
-|------|-------|
-| Source code | `parasol/my-flask-app` |
+
+| What             | Where                         |
+| ---------------- | ----------------------------- |
+| Source code      | `parasol/my-flask-app`        |
 | GitOps manifests | `parasol/my-flask-app-gitops` |
-| ArgoCD apps | `rhdh-gitops` namespace |
+| ArgoCD apps      | `rhdh-gitops` namespace       |
+
+
+
 
 ### Step 2: Watch the pipeline and deployment succeed
 
@@ -173,6 +201,8 @@ oc get pods -n my-flask-app-dev
 curl https://my-flask-app-my-flask-app-dev.<CLUSTER_SUBDOMAIN>/hello
 # {"message":"Hello from Flask!"}
 ```
+
+
 
 ### Step 3: Verify lifecycle tracking is wired up
 
@@ -202,11 +232,15 @@ metadata:
     backstage.io/template-version: "1.1.0"  # was "1.0.0"
 ```
 
+
+
 ### Step 5: Push the updated template
 
 ```bash
 ./scripts/push-template.sh
 ```
+
+
 
 ### Step 6: Check for the merge request
 
@@ -229,32 +263,36 @@ If notifications are enabled, the entity owner also receives a notification in D
 
 ---
 
+
+
 ## Template Details
+
+
 
 ### Python Flask Application (`templates/python-app/`)
 
 **What the template creates when a developer uses it:**
 
 1. **Source repository** in GitLab (`parasol/<app-name>`) containing:
-   - A Flask application with health check (`/`) and hello endpoint (`/hello`)
-   - `Containerfile` based on UBI9 Python 3.12 with Gunicorn
-   - `catalog-info.yaml` with `spec.scaffoldedFrom` for lifecycle tracking
-
+  - A Flask application with health check (`/`) and hello endpoint (`/hello`)
+  - `Containerfile` based on UBI9 Python 3.12 with Gunicorn
+  - `catalog-info.yaml` with `spec.scaffoldedFrom` for lifecycle tracking
 2. **GitOps repository** in GitLab (`parasol/<app-name>-gitops`) containing:
-   - ArgoCD Application definitions (dev deployment + build pipeline)
-   - Helm chart for app deployment (wraps the shared `app-deployer` chart)
-   - Self-contained Helm chart for the Tekton build pipeline
-
+  - ArgoCD Application definitions (dev deployment + build pipeline)
+  - Helm chart for app deployment (wraps the shared `app-deployer` chart)
+  - Self-contained Helm chart for the Tekton build pipeline
 3. **ArgoCD Applications** in the `rhdh-gitops` namespace that sync and deploy everything
 
 **Template parameters:**
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `name` | Application name (lowercase, hyphens) | required |
-| `owner` | Owning group (picked from catalog) | required |
-| `description` | Short description for the catalog | optional |
-| `imageOrganization` | Quay organization | `parasol` |
+
+| Parameter           | Description                           | Default   |
+| ------------------- | ------------------------------------- | --------- |
+| `name`              | Application name (lowercase, hyphens) | required  |
+| `owner`             | Owning group (picked from catalog)    | required  |
+| `description`       | Short description for the catalog     | optional  |
+| `imageOrganization` | Quay organization                     | `parasol` |
+
 
 **Build pipeline flow (Tekton):**
 
@@ -269,15 +307,19 @@ Production promotion is triggered by git tags, which retag the image and open a 
 
 The local template files use these placeholders which `push-template.sh` replaces at deploy time:
 
-| Placeholder | Replaced with |
-|-------------|---------------|
-| `__GITLAB_HOST__` | GitLab route hostname |
-| `__CLUSTER_SUBDOMAIN__` | OpenShift apps subdomain |
-| `__QUAY_HOST__` | Quay route hostname |
-| `__GITOPS_NAMESPACE__` | ArgoCD namespace (default: `rhdh-gitops`) |
-| `__CHART_REPO_URL__` | Helm chart repository URL for the `app-deployer` chart |
+
+| Placeholder             | Replaced with                                          |
+| ----------------------- | ------------------------------------------------------ |
+| `__GITLAB_HOST__`       | GitLab route hostname                                  |
+| `__CLUSTER_SUBDOMAIN__` | OpenShift apps subdomain                               |
+| `__QUAY_HOST__`         | Quay route hostname                                    |
+| `__GITOPS_NAMESPACE__`  | ArgoCD namespace (default: `rhdh-gitops`)              |
+| `__CHART_REPO_URL__`    | Helm chart repository URL for the `app-deployer` chart |
+
 
 ---
+
+
 
 ## Project Structure
 
@@ -325,6 +367,8 @@ The local template files use these placeholders which `push-template.sh` replace
                     └── pvc-build-cache.yaml
 ```
 
+
+
 ## Architecture
 
 The build pipeline uses **hand-crafted Helm templates** rather than depending on a shared `build-deployer` chart. This keeps the template self-contained and avoids modifying shared infrastructure for template-specific features like cross-namespace rollout-restart.
@@ -340,3 +384,4 @@ The app deployment wraps the shared `app-deployer` chart from the GitLab Package
 5. Include `spec.scaffoldedFrom: template:default/<template-name>` in the skeleton's `catalog-info.yaml`
 6. Add the new template files to the `push-template.sh` `template_files` list
 7. Run `./scripts/push-template.sh` to deploy
+
