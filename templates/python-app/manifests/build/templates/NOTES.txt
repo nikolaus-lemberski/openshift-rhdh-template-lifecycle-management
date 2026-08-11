@@ -1,0 +1,36 @@
+{{ include "build-deployer.name" . }} build pipeline deployed to namespace {{ include "build-deployer.namespace" . }}.
+
+Resources created:
+{{- if .Values.namespace.create }}
+  - Namespace: {{ include "build-deployer.namespace" . }}
+{{- end }}
+  - ServiceAccount: {{ include "build-deployer.saName" . }}
+  - RoleBinding: {{ include "build-deployer.saName" . }}-edit
+  - ClusterRoleBinding: {{ include "build-deployer.saName" . }}-{{ .Values.owner }}-triggers
+  - Pipeline: {{ include "build-deployer.pipelineName" . }}
+  - Pipeline: {{ include "build-deployer.promotePipelineName" . }}
+  - EventListener: {{ include "build-deployer.listenerName" . }}
+  - Route: {{ include "build-deployer.listenerName" . }}
+  - TriggerBinding: {{ include "build-deployer.pipelineName" . }}-binding
+  - TriggerTemplate: {{ include "build-deployer.pipelineName" . }}-template
+  - TriggerBinding: {{ include "build-deployer.promotePipelineName" . }}-binding
+  - TriggerTemplate: {{ include "build-deployer.promotePipelineName" . }}-template
+
+Dev pipeline (push events on {{ .Values.source.branch }}):
+  - clone-source (cluster task: git-clone)
+{{- if .Values.pipeline.tasks.mavenBuild.enabled }}
+  - maven-build
+{{- end }}
+  - build-and-push (cluster task: buildah)
+  - acs-image-scan
+  - acs-image-check
+  - generate-sbom
+  - upload-sbom-to-tpa
+  - rollout-restart
+
+Promotion pipeline (tag events):
+  - retag-image (skopeo copy -- promotes the exact dev image)
+  - open-prod-pr (opens GitLab MR to update {{ .Values.promotion.prodValuesFile }})
+
+Source: {{ .Values.source.repoUrl }} (branch: {{ .Values.source.branch }})
+Image: {{ include "build-deployer.imageRef" . }}

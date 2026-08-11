@@ -1,0 +1,35 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: {{ include "build-deployer.promotePipelineName" . }}
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  params:
+    - name: git-tag
+      type: string
+  workspaces:
+    - name: source
+    - name: dockerconfig
+  tasks:
+    - name: retag-image
+      taskRef:
+        name: {{ include "build-deployer.name" . }}-retag-image
+      params:
+        - name: SOURCE_IMAGE
+          value: {{ include "build-deployer.imageRef" . | quote }}
+        - name: DEST_IMAGE
+          value: "{{ include "build-deployer.imageBase" . }}:$(params.git-tag)"
+      workspaces:
+        - name: dockerconfig
+          workspace: dockerconfig
+    - name: open-prod-pr
+      runAfter:
+        - retag-image
+      taskRef:
+        name: {{ include "build-deployer.name" . }}-update-prod-manifest
+      params:
+        - name: IMAGE_TAG
+          value: $(params.git-tag)
+      workspaces:
+        - name: source
+          workspace: source

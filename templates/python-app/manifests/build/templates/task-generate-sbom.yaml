@@ -1,0 +1,101 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-generate-sbom
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  description: >-
+    Generate a CycloneDX 1.6 SBOM for a container image using syft.
+    Scans OS packages and Java archives (JAR/WAR/EAR) including license
+    enrichment from Maven Central.
+  params:
+    - name: IMAGE
+      type: string
+      description: Full image reference to scan
+    - name: SOURCE_NAME
+      type: string
+      default: ""
+    - name: SOURCE_VERSION
+      type: string
+      default: ""
+    - name: SBOM_OUTPUT_PATH
+      type: string
+      default: sbom/sbom-cyclonedx.json
+  workspaces:
+    - name: source
+    - name: dockerconfig
+      description: Docker config for registry authentication
+      optional: true
+  steps:
+    - name: generate-sbom
+      image: registry.access.redhat.com/ubi9-minimal:latest
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Set up registry auth
+        DOCKER_CONFIG_DIR="/tmp/docker-config"
+        mkdir -p "${DOCKER_CONFIG_DIR}"
+        if [ -f "$(workspaces.dockerconfig.path)/.dockerconfigjson" ]; then
+          cp "$(workspaces.dockerconfig.path)/.dockerconfigjson" "${DOCKER_CONFIG_DIR}/config.json"
+        elif [ -f "$(workspaces.dockerconfig.path)/config.json" ]; then
+          cp "$(workspaces.dockerconfig.path)/config.json" "${DOCKER_CONFIG_DIR}/config.json"
+        fi
+        export DOCKER_CONFIG="${DOCKER_CONFIG_DIR}"
+
+        echo "Installing prerequisites..."
+        microdnf install -y tar gzip --nodocs && microdnf clean all
+
+        echo "Installing syft..."
+        curl -sSfL https://get.anchore.io/syft | sh -s -- -b /tmp/bin
+        export PATH="/tmp/bin:${PATH}"
+
+        SBOM_DIR=$(dirname "$(params.SBOM_OUTPUT_PATH)")
+        mkdir -p "${SBOM_DIR}"
+
+        echo "Generating SBOM for $(params.IMAGE)..."
+        echo "  Source name: $(params.SOURCE_NAME)"
+        echo "  Source version: $(params.SOURCE_VERSION)"
+
+        # Tekton overrides SSL_CERT_DIR with /tekton-custom-certs, which
+        # prevents Go-based tools (like syft) from trusting the default system
+        # CA bundle. Unsetting restores Go's default CA trust behavior.
+        unset SSL_CERT_DIR
+
+        syft "registry:$(params.IMAGE)" \
+          --source-name "$(params.SOURCE_NAME)" \
+          --source-version "$(params.SOURCE_VERSION)" \
+          --scope deep-squashed \
+          --enrich java \
+          --select-catalogers "+java-archive-cataloger" \
+          -o "cyclonedx-json@1.6=$(params.SBOM_OUTPUT_PATH)"
+
+        echo "SBOM written to $(params.SBOM_OUTPUT_PATH)"
+    - name: verify
+      image: registry.access.redhat.com/ubi9:latest
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        SBOM_FILE="$(params.SBOM_OUTPUT_PATH)"
+        if [ ! -f "${SBOM_FILE}" ]; then
+          echo "ERROR: SBOM file not found at ${SBOM_FILE}" >&2
+          exit 1
+        fi
+
+        python3 -c "
+        import json
+        with open('${SBOM_FILE}') as f:
+            sbom = json.load(f)
+        spec_version = sbom.get('specVersion', 'unknown')
+        meta = sbom.get('metadata', {})
+        component = meta.get('component', {})
+        components = sbom.get('components', [])
+        licenses_count = sum(1 for c in components if c.get('licenses'))
+        print(f'SBOM Summary:')
+        print(f'  CycloneDX version: {spec_version}')
+        print(f'  Source name: {component.get(\"name\", \"N/A\")}')
+        print(f'  Source version: {component.get(\"version\", \"N/A\")}')
+        print(f'  Total components: {len(components)}')
+        print(f'  Components with license info: {licenses_count}')
+        "

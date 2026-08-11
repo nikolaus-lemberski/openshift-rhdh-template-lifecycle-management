@@ -1,0 +1,11 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: {{ include "build-deployer.promotePipelineName" . }}-binding
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  params:
+    - name: git-tag
+      value: $(extensions.tag_name)
+    - name: git-revision
+      value: $(body.checkout_sha)

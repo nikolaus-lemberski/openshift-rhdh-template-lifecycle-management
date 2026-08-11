@@ -1,0 +1,78 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-update-prod-manifest
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  description: >-
+    Clone the manifests repo, update the prod values file with the new
+    image tag, push a branch, and open a GitLab merge request. The MR
+    serves as the approval gate for production deployment.
+  params:
+    - name: IMAGE_TAG
+      type: string
+      description: The git tag / image tag to promote (e.g. 1.1)
+    - name: GITLAB_HOST
+      type: string
+      default: {{ .Values.gitlabHost | quote }}
+    - name: MANIFESTS_REPO_PATH
+      type: string
+      default: {{ .Values.promotion.manifestsRepoPath | quote }}
+    - name: PROD_VALUES_FILE
+      type: string
+      default: {{ .Values.promotion.prodValuesFile | quote }}
+  workspaces:
+    - name: source
+  volumes:
+    - name: gitlab-token
+      secret:
+        secretName: gitlab-credentials
+  steps:
+    - name: clone-update-pr
+      image: quay.io/agnosticd/ee-multicloud:latest
+      volumeMounts:
+        - name: gitlab-token
+          mountPath: /secrets/gitlab-token
+      script: |
+        #!/bin/bash
+        set -e
+
+        GITLAB_TOKEN=$(cat /secrets/gitlab-token/token)
+        GITLAB_HOST=$(params.GITLAB_HOST)
+        IMAGE_TAG=$(params.IMAGE_TAG)
+        MANIFESTS_REPO_PATH=$(params.MANIFESTS_REPO_PATH)
+        PROD_VALUES_FILE=$(params.PROD_VALUES_FILE)
+        MANIFESTS_REPO="https://root:${GITLAB_TOKEN}@${GITLAB_HOST}/${MANIFESTS_REPO_PATH}.git"
+
+        git config --global user.email "tekton@pipeline.local"
+        git config --global user.name "Tekton Pipeline"
+        export GIT_SSL_NO_VERIFY=true
+
+        git clone "$MANIFESTS_REPO" $(workspaces.source.path)/manifests
+        cd $(workspaces.source.path)/manifests
+
+        BRANCH="promote-${IMAGE_TAG}"
+        git checkout -b "${BRANCH}"
+
+        sed -i "s|tag:.*|tag: \"${IMAGE_TAG}\"|g" "${PROD_VALUES_FILE}"
+
+        if git diff --quiet; then
+          echo "Prod manifest already at tag ${IMAGE_TAG}, nothing to promote."
+          exit 0
+        fi
+
+        git add .
+        git commit -m "chore: promote ${IMAGE_TAG} to prod"
+        git push origin "${BRANCH}"
+
+        # URL-encode the project path for GitLab API
+        ENCODED_PROJECT=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${MANIFESTS_REPO_PATH}', safe=''))")
+
+        curl -k --fail \
+          --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          --data-urlencode "source_branch=${BRANCH}" \
+          --data-urlencode "target_branch=main" \
+          --data-urlencode "title=Promote ${IMAGE_TAG} to production" \
+          "https://${GITLAB_HOST}/api/v4/projects/${ENCODED_PROJECT}/merge_requests"
+
+        echo "Merge request created for ${IMAGE_TAG} promotion."

@@ -1,0 +1,56 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: {{ include "build-deployer.listenerName" . }}
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  serviceAccountName: {{ include "build-deployer.saName" . }}
+  triggers:
+    - name: push
+      interceptors:
+        - ref:
+            name: gitlab
+            kind: ClusterInterceptor
+          params:
+            - name: secretRef
+              value:
+                secretName: gitlab-credentials
+                secretKey: token
+            - name: eventTypes
+              value:
+                {{- toYaml .Values.triggers.eventTypes | nindent 16 }}
+        - ref:
+            name: cel
+            kind: ClusterInterceptor
+          params:
+            - name: filter
+              value: {{ printf "body.ref == 'refs/heads/%s'" .Values.source.branch | quote }}
+      bindings:
+        - ref: {{ include "build-deployer.pipelineName" . }}-binding
+      template:
+        ref: {{ include "build-deployer.pipelineName" . }}-template
+    - name: tag-push
+      interceptors:
+        - ref:
+            name: gitlab
+            kind: ClusterInterceptor
+          params:
+            - name: secretRef
+              value:
+                secretName: gitlab-credentials
+                secretKey: token
+            - name: eventTypes
+              value:
+                - "Tag Push Hook"
+        - ref:
+            name: cel
+            kind: ClusterInterceptor
+          params:
+            - name: overlays
+              value:
+                - key: tag_name
+                  expression: "body.ref.split('/').last()"
+      bindings:
+        - ref: {{ include "build-deployer.promotePipelineName" . }}-binding
+      template:
+        ref: {{ include "build-deployer.promotePipelineName" . }}-template

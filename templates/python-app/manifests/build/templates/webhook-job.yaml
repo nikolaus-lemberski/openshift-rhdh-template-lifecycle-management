@@ -1,0 +1,109 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "build-deployer.name" . }}-webhook
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  backoffLimit: 100
+  template:
+    spec:
+      serviceAccountName: {{ include "build-deployer.saName" . }}
+      containers:
+        - name: webhook-setup
+          image: quay.io/agnosticd/ee-multicloud:latest
+          env:
+            - name: GITLAB_HOST
+              value: {{ .Values.gitlabHost | quote }}
+            - name: GIT_CREDENTIALS
+              valueFrom:
+                secretKeyRef:
+                  name: gitlab-basic-auth
+                  key: .git-credentials
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gitlab-credentials
+                  key: token
+            - name: NAMESPACE
+              value: {{ include "build-deployer.namespace" . | quote }}
+            - name: BRANCH
+              value: {{ .Values.source.branch | quote }}
+            - name: LISTENER_ROUTE_NAME
+              value: {{ include "build-deployer.listenerName" . | quote }}
+            - name: SOURCE_PROJECT_PATH
+              value: {{ .Values.webhook.sourceProjectPath | quote }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+
+              GITLAB_HOST="${GITLAB_HOST}"
+
+              # Extract token from git-credentials URL
+              GITLAB_TOKEN=$(python3 -c "
+              import os, re
+              creds = os.environ.get('GIT_CREDENTIALS', '')
+              m = re.search(r'://[^:]+:([^@]+)@', creds)
+              print(m.group(1) if m else '')
+              ")
+
+              # Wait for EventListener route
+              echo "Waiting for EventListener route..."
+              for i in $(seq 1 60); do
+                ROUTE_HOST=$(oc get route ${LISTENER_ROUTE_NAME} -n ${NAMESPACE} -o jsonpath='{.spec.host}' 2>/dev/null || true)
+                if [ -n "${ROUTE_HOST}" ]; then
+                  break
+                fi
+                echo "Waiting for route... attempt ${i}"
+                sleep 10
+              done
+
+              if [ -z "${ROUTE_HOST}" ]; then
+                echo "ERROR: EventListener route not found"
+                exit 1
+              fi
+
+              EL_URL="https://${ROUTE_HOST}"
+              echo "EventListener URL: ${EL_URL}"
+
+              # URL-encode the project path for GitLab API
+              ENCODED_PROJECT=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${SOURCE_PROJECT_PATH}', safe=''))")
+
+              # Get project ID
+              PROJECT_ID=$(curl -sk --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+                "https://${GITLAB_HOST}/api/v4/projects/${ENCODED_PROJECT}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+              echo "Project ID: ${PROJECT_ID}"
+
+              # Create or update webhook
+              EXISTING=$(curl -sk --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+                "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}/hooks" | python3 -c "
+              import sys, json
+              hooks = json.load(sys.stdin)
+              matches = [h for h in hooks if h.get('url') == '${EL_URL}']
+              print(matches[0]['id'] if matches else '')
+              ")
+
+              if [ -n "${EXISTING}" ]; then
+                echo "Updating existing webhook ${EXISTING}..."
+                curl -sk --fail \
+                  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+                  --header "Content-Type: application/json" \
+                  --request PUT \
+                  --data "{\"url\":\"${EL_URL}\",\"token\":\"${WEBHOOK_SECRET}\",\"push_events\":true,\"tag_push_events\":true,\"enable_ssl_verification\":false}" \
+                  "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}/hooks/${EXISTING}"
+              else
+                echo "Creating webhook..."
+                curl -sk --fail \
+                  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+                  --header "Content-Type: application/json" \
+                  --request POST \
+                  --data "{\"url\":\"${EL_URL}\",\"token\":\"${WEBHOOK_SECRET}\",\"push_events\":true,\"tag_push_events\":true,\"enable_ssl_verification\":false}" \
+                  "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}/hooks"
+              fi
+
+              echo "Webhook setup complete."
+      restartPolicy: Never
+{{- end }}

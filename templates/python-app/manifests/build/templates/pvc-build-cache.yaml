@@ -1,0 +1,13 @@
+{{- if .Values.buildCache.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "build-deployer.name" . }}-maven-cache
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.buildCache.storageSize }}
+{{- end }}

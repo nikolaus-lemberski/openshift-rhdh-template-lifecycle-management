@@ -1,0 +1,35 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: {{ include "build-deployer.promotePipelineName" . }}-template
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  params:
+    - name: git-tag
+    - name: git-revision
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        generateName: {{ include "build-deployer.promotePipelineName" . }}-
+        namespace: {{ include "build-deployer.namespace" . }}
+        labels:
+          app.kubernetes.io/name: {{ include "build-deployer.name" . }}
+      spec:
+        pipelineRef:
+          name: {{ include "build-deployer.promotePipelineName" . }}
+        params:
+          - name: git-tag
+            value: $(tt.params.git-tag)
+        workspaces:
+          - name: source
+            volumeClaimTemplate:
+              spec:
+                accessModes:
+                  - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: 1Gi
+          - name: dockerconfig
+            secret:
+              secretName: quay-push-secret

@@ -1,0 +1,72 @@
+{{- if .Values.pipeline.tasks.sonarScan.enabled }}
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-sonar-scan
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  params:
+    - name: SONAR_HOST_URL
+      type: string
+      default: "http://sonarqube.sonarqube.svc:9000"
+    - name: SONAR_DASHBOARD_URL
+      type: string
+      default: {{ printf "https://sonarqube-sonarqube.%s" .Values.clusterSubdomain | quote }}
+    - name: SONAR_PROJECT_KEY
+      type: string
+      default: {{ .Values.pipeline.tasks.sonarScan.projectKey | default (include "build-deployer.name" .) | quote }}
+  results:
+    - name: SONAR_REPORT_URL
+      description: Link to the SonarQube quality report
+    - name: SONAR_QUALITY_GATE
+      description: Quality gate status (PASSED or FAILED)
+  workspaces:
+    - name: source
+    - name: sonar-credentials
+  steps:
+    - name: sonar-scan
+      image: registry.access.redhat.com/ubi9/openjdk-21:1.20
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: SONAR_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sonarqube-credentials
+              key: password
+      script: |
+        #!/usr/bin/env bash
+        set -x
+
+        SONAR_HOST_URL="$(params.SONAR_HOST_URL)"
+        SONAR_PROJECT_KEY="$(params.SONAR_PROJECT_KEY)"
+        SONAR_LOGIN="admin"
+
+        DASHBOARD_URL="$(params.SONAR_DASHBOARD_URL)"
+        if [ -z "${DASHBOARD_URL}" ]; then
+          DASHBOARD_URL="${SONAR_HOST_URL}"
+        fi
+        REPORT_URL="${DASHBOARD_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
+        echo -n "${REPORT_URL}" > $(results.SONAR_REPORT_URL.path)
+
+        mvn verify sonar:sonar \
+          -Dsonar.host.url="${SONAR_HOST_URL}" \
+          -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
+          -Dsonar.login="${SONAR_LOGIN}" \
+          -Dsonar.password="${SONAR_PASSWORD}" \
+          -Dsonar.qualitygate.wait=true
+        SCAN_EXIT=$?
+
+        if [ ${SCAN_EXIT} -eq 0 ]; then
+          echo -n "PASSED" > $(results.SONAR_QUALITY_GATE.path)
+        else
+          echo -n "FAILED" > $(results.SONAR_QUALITY_GATE.path)
+        fi
+
+        echo ""
+        echo "============================================"
+        echo "SonarQube Report: ${REPORT_URL}"
+        echo "============================================"
+        echo ""
+
+        exit ${SCAN_EXIT}
+{{- end }}

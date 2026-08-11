@@ -1,0 +1,23 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ${{ values.name }}
+  description: "${{ values.description }}"
+  annotations:
+    argocd/app-name: ${{ values.name }}
+    backstage.io/source-location: url:https://${{ values.gitlab_host }}/${{ values.gitlab_group }}/${{ values.name }}
+    backstage.io/kubernetes-id: ${{ values.name }}
+    backstage.io/kubernetes-label-selector: app.kubernetes.io/name=${{ values.name }}
+    janus-idp.io/tekton: ${{ values.name }}
+    gitlab.com/project-slug: ${{ values.gitlab_group }}/${{ values.name }}
+    quay.io/repository-slug: parasol/${{ values.name }}
+  links:
+    - url: https://devspaces.${{ values.cluster_subdomain }}/#https://${{ values.gitlab_host }}/${{ values.gitlab_group }}/${{ values.name }}
+      title: Open in Dev Spaces
+      icon: catalog
+      type: devspaces
+spec:
+  type: service
+  lifecycle: development
+  owner: ${{ values.owner }}
+  scaffoldedFrom: template:default/python-flask-app

@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ${{ values.name }}-build
+  namespace: ${{ values.gitops_namespace }}
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  destination:
+    namespace: ${{ values.name }}-build
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: build
+    repoURL: https://${{ values.gitlab_host }}/${{ values.owner }}/${{ values.name }}-gitops.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true

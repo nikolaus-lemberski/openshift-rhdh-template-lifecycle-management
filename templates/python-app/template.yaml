@@ -1,0 +1,128 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: python-flask-app
+  title: Python Flask Application
+  description: Create a Python Flask application with CI/CD pipeline, dev deployment, and production promotion
+  annotations:
+    backstage.io/template-version: "1.0.0"
+  tags:
+    - python
+    - flask
+    - rest-api
+spec:
+  owner: rhdh
+  type: service
+
+  parameters:
+    - title: Application Details
+      required:
+        - name
+        - owner
+      properties:
+        name:
+          title: Application Name
+          type: string
+          description: Unique name for this application (lowercase, hyphens allowed)
+          pattern: "^[a-z][a-z0-9-]*$"
+        owner:
+          title: Owner
+          type: string
+          description: Group that owns this application
+          ui:field: EntityPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+        description:
+          title: Description
+          type: string
+          description: Short description displayed in the Backstage catalog
+
+    - title: Image Registry
+      required:
+        - imageOrganization
+      properties:
+        imageOrganization:
+          title: Image Organization
+          type: string
+          description: Quay organization (e.g. parasol, myorg)
+          default: parasol
+
+  steps:
+    - id: fetch-source
+      name: Fetch Source Skeleton
+      action: fetch:template
+      input:
+        url: ./skeleton/
+        targetPath: source
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          gitlab_group: parasol
+          gitlab_host: __GITLAB_HOST__
+          cluster_subdomain: __CLUSTER_SUBDOMAIN__
+
+    - id: publish-source
+      name: Publish Source to GitLab
+      action: publish:gitlab
+      input:
+        repoUrl: __GITLAB_HOST__?owner=parasol&repo=${{ parameters.name }}
+        sourcePath: source
+        defaultBranch: main
+        repoVisibility: public
+
+    - id: fetch-manifests
+      name: Fetch GitOps Manifests
+      action: fetch:template
+      input:
+        url: ./manifests/
+        targetPath: manifests
+        values:
+          name: ${{ parameters.name }}
+          owner: parasol
+          source_repo: ${{ steps['publish-source'].output.remoteUrl }}.git
+          image_host: __QUAY_HOST__
+          image_organization: ${{ parameters.imageOrganization }}
+          image_name: ${{ parameters.name }}
+          image_tag: latest
+          gitlab_host: __GITLAB_HOST__
+          cluster_subdomain: __CLUSTER_SUBDOMAIN__
+          gitops_namespace: __GITOPS_NAMESPACE__
+          chart_repo_url: __CHART_REPO_URL__
+
+    - id: publish-manifests
+      name: Publish Manifests to GitLab
+      action: publish:gitlab
+      input:
+        repoUrl: __GITLAB_HOST__?owner=parasol&repo=${{ parameters.name }}-gitops
+        sourcePath: manifests
+        defaultBranch: main
+        repoVisibility: public
+
+    - id: create-argocd-resources
+      name: Create ArgoCD Resources
+      action: argocd:create-resources
+      input:
+        appName: ${{ parameters.name }}-bootstrap
+        argoInstance: main
+        namespace: __GITOPS_NAMESPACE__
+        repoUrl: ${{ steps['publish-manifests'].output.remoteUrl }}.git
+        path: argocd
+
+    - id: register
+      name: Register Component
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps['publish-source'].output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml
+
+  output:
+    links:
+      - title: Source Repository
+        url: ${{ steps['publish-source'].output.remoteUrl }}
+      - title: GitOps Repository
+        url: ${{ steps['publish-manifests'].output.remoteUrl }}
+      - title: Open in catalog
+        icon: catalog
+        entityRef: ${{ steps.register.output.entityRef }}

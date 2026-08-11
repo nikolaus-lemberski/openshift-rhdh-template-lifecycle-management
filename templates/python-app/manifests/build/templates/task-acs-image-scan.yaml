@@ -1,0 +1,105 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-acs-image-scan
+  namespace: {{ include "build-deployer.namespace" . }}
+  annotations:
+    task.results.format: application/json
+    task.results.type: roxctl-image-scan
+    task.results.key: SCAN_OUTPUT
+    task.output.location: logs
+    task.results.container: step-report
+spec:
+  description: >-
+    Scan an image with Red Hat Advanced Cluster Security (ACS) and return
+    vulnerability results. Results are visualized in Developer Hub.
+  params:
+    - name: IMAGE
+      type: string
+      description: Full image reference to scan
+    - name: ROX_CENTRAL_ENDPOINT
+      type: string
+      default: {{ printf "central-stackrox.%s:443" .Values.clusterSubdomain | quote }}
+    - name: ROX_SECRET_NAME
+      type: string
+      default: acs-api-token
+    - name: INSECURE_SKIP_TLS_VERIFY
+      type: string
+      default: "true"
+  results:
+    - name: SCAN_OUTPUT
+      description: Vulnerability summary in the format expected by the Developer Hub Tekton plugin
+  volumes:
+    - name: scan-output
+      emptyDir: {}
+  steps:
+    - name: scan
+      image: registry.access.redhat.com/ubi9-minimal:latest
+      env:
+        - name: ROX_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.ROX_SECRET_NAME)
+              key: rox_api_token
+        - name: ROX_CENTRAL_ENDPOINT
+          value: $(params.ROX_CENTRAL_ENDPOINT)
+      volumeMounts:
+        - name: scan-output
+          mountPath: /tmp/scan-output
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        curl -sk -L -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+          "https://${ROX_CENTRAL_ENDPOINT}/api/cli/download/roxctl-linux" \
+          --output /tmp/roxctl
+        chmod +x /tmp/roxctl
+
+        /tmp/roxctl image scan \
+          --insecure-skip-tls-verify=$(params.INSECURE_SKIP_TLS_VERIFY) \
+          -e "${ROX_CENTRAL_ENDPOINT}" \
+          --output json \
+          --image "$(params.IMAGE)" \
+          > /tmp/scan-output/image-scan.json
+
+        echo "ACS image scan completed for $(params.IMAGE)" >&2
+    - name: summary
+      image: registry.access.redhat.com/ubi9:latest
+      volumeMounts:
+        - name: scan-output
+          mountPath: /tmp/scan-output
+      script: |
+        #!/usr/bin/env bash
+        python3 -c "
+        import json, sys
+        data = json.load(open('/tmp/scan-output/image-scan.json'))
+        summary = data.get('result', {}).get('summary', {})
+        vulns = data.get('result', {}).get('vulnerabilities', [])
+        unpatched = {'critical':0,'high':0,'medium':0,'low':0}
+        for v in vulns:
+            if not v.get('componentFixedVersion',''):
+                sev = v.get('cveSeverity','')
+                if sev == 'CRITICAL': unpatched['critical'] += 1
+                elif sev == 'IMPORTANT': unpatched['high'] += 1
+                elif sev == 'MODERATE': unpatched['medium'] += 1
+                elif sev == 'LOW': unpatched['low'] += 1
+        result = {
+            'vulnerabilities': {
+                'critical': summary.get('CRITICAL', 0),
+                'high': summary.get('IMPORTANT', 0),
+                'medium': summary.get('MODERATE', 0),
+                'low': summary.get('LOW', 0),
+                'unknown': 0
+            },
+            'unpatched_vulnerabilities': unpatched
+        }
+        print(json.dumps(result))
+        " > $(results.SCAN_OUTPUT.path)
+    - name: report
+      image: registry.access.redhat.com/ubi9-minimal:latest
+      volumeMounts:
+        - name: scan-output
+          mountPath: /tmp/scan-output
+      script: |
+        #!/usr/bin/env bash
+        cat /tmp/scan-output/image-scan.json

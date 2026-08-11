@@ -1,0 +1,77 @@
+name: ${{ values.name }}
+
+namespace:
+  name: ${{ values.name }}-build
+  create: true
+  labels: {}
+  annotations: {}
+  istio:
+    enabled: false
+    dataplaneMode: ambient
+    useWaypoint: waypoint
+
+source:
+  repoUrl: ${{ values.source_repo }}
+  branch: main
+
+image:
+  host: ${{ values.image_host }}
+  organization: ${{ values.image_organization }}
+  name: ${{ values.image_name }}
+  tag: ${{ values.image_tag }}
+
+clusterSubdomain: ${{ values.cluster_subdomain }}
+gitlabHost: ${{ values.gitlab_host }}
+
+owner: ${{ values.owner }}
+devEmail: ""
+
+pipeline:
+  tasks:
+    mavenBuild:
+      enabled: false
+    buildAndPush:
+      dockerfile: Containerfile
+      tlsVerify: "false"
+      storageDriver: vfs
+    sonarScan:
+      enabled: false
+      projectKey: ""
+
+triggers:
+  eventTypes:
+    - "Push Hook"
+
+buildCache:
+  enabled: true
+  storageSize: 2Gi
+
+webhook:
+  enabled: true
+  sourceProjectPath: ${{ values.owner }}/${{ values.name }}
+
+linkPushSecret:
+  enabled: true
+
+secrets:
+  acs:
+    vaultKey: secrets/acs/api-token
+  gitlabBasicAuth:
+    vaultKey: secrets/gitlab/token
+  gitlabWebhook:
+    vaultKey: secrets/gitlab/token
+  quayPush:
+    vaultKey: secrets/quay/auth
+  sonarqube:
+    vaultKey: secrets/sonarqube/admin-password
+  tpa:
+    vaultKey: secrets/tpa/cli-client-secret
+
+promotion:
+  manifestsRepoPath: ${{ values.owner }}/${{ values.name }}-gitops
+  prodValuesFile: app/values/values-prod.yaml
+
+rollout:
+  namespace: ${{ values.name }}-dev
+
+extraLabels: {}

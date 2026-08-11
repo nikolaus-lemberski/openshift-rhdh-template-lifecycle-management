@@ -1,0 +1,85 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-acs-image-check
+  namespace: {{ include "build-deployer.namespace" . }}
+  annotations:
+    task.results.format: application/json
+    task.results.type: roxctl-image-check
+    task.results.key: SCAN_OUTPUT
+    task.output.location: logs
+    task.results.container: step-report
+spec:
+  description: >-
+    Check an image against ACS build-time policies. Fails the pipeline
+    if enforced policies are violated. Results are visualized in Developer Hub.
+  params:
+    - name: IMAGE
+      type: string
+      description: Full image reference to check
+    - name: ROX_CENTRAL_ENDPOINT
+      type: string
+      default: {{ printf "central-stackrox.%s:443" .Values.clusterSubdomain | quote }}
+    - name: ROX_SECRET_NAME
+      type: string
+      default: acs-api-token
+    - name: INSECURE_SKIP_TLS_VERIFY
+      type: string
+      default: "true"
+  volumes:
+    - name: check-output
+      emptyDir: {}
+  steps:
+    - name: check
+      image: registry.access.redhat.com/ubi9-minimal:latest
+      env:
+        - name: ROX_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.ROX_SECRET_NAME)
+              key: rox_api_token
+        - name: ROX_CENTRAL_ENDPOINT
+          value: $(params.ROX_CENTRAL_ENDPOINT)
+      volumeMounts:
+        - name: check-output
+          mountPath: /tmp/check-output
+      script: |
+        #!/usr/bin/env bash
+        set -uo pipefail
+
+        curl -sk -L -H "Authorization: Bearer ${ROX_API_TOKEN}" \
+          "https://${ROX_CENTRAL_ENDPOINT}/api/cli/download/roxctl-linux" \
+          --output /tmp/roxctl
+        chmod +x /tmp/roxctl
+
+        /tmp/roxctl image check \
+          --insecure-skip-tls-verify=$(params.INSECURE_SKIP_TLS_VERIFY) \
+          -e "${ROX_CENTRAL_ENDPOINT}" \
+          --output json \
+          --image "$(params.IMAGE)" \
+          > /tmp/check-output/image-check.json
+        CHECK_EXIT=$?
+
+        echo "ACS image check completed for $(params.IMAGE)" >&2
+        echo -n "${CHECK_EXIT}" > /tmp/check-output/exit-code
+        exit 0
+    - name: report
+      image: registry.access.redhat.com/ubi9-minimal:latest
+      volumeMounts:
+        - name: check-output
+          mountPath: /tmp/check-output
+      script: |
+        #!/usr/bin/env bash
+        cat /tmp/check-output/image-check.json
+    - name: enforce
+      image: registry.access.redhat.com/ubi9-minimal:latest
+      volumeMounts:
+        - name: check-output
+          mountPath: /tmp/check-output
+      script: |
+        #!/usr/bin/env bash
+        CHECK_EXIT=$(cat /tmp/check-output/exit-code)
+        if [ "${CHECK_EXIT}" != "0" ]; then
+          echo "ACS image check failed with policy violations (exit code ${CHECK_EXIT})" >&2
+          exit 1
+        fi

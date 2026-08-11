@@ -1,0 +1,149 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: {{ include "build-deployer.pipelineName" . }}
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  params:
+    - name: git-revision
+      type: string
+  results:
+    - name: ACS_IMAGE_SCAN_OUTPUT
+      description: ACS vulnerability summary for Developer Hub
+      value: $(tasks.acs-image-scan.results.SCAN_OUTPUT)
+  workspaces:
+    - name: source
+    - name: basic-auth
+    - name: dockerconfig
+    {{- if .Values.pipeline.tasks.sonarScan.enabled }}
+    - name: sonar-credentials
+    {{- end }}
+    {{- if .Values.buildCache.enabled }}
+    - name: maven-cache
+    {{- end }}
+  tasks:
+    - name: clone-source
+      taskRef:
+        resolver: cluster
+        params:
+          - name: kind
+            value: task
+          - name: name
+            value: git-clone
+          - name: namespace
+            value: openshift-pipelines
+      params:
+        - name: URL
+          value: {{ .Values.source.repoUrl | quote }}
+        - name: REVISION
+          value: $(params.git-revision)
+        - name: SSL_VERIFY
+          value: "false"
+      workspaces:
+        - name: output
+          workspace: source
+        - name: basic-auth
+          workspace: basic-auth
+    {{- if .Values.pipeline.tasks.mavenBuild.enabled }}
+    - name: maven-build
+      runAfter:
+        - clone-source
+      taskRef:
+        name: {{ include "build-deployer.name" . }}-maven-build
+      workspaces:
+        - name: source
+          workspace: source
+        {{- if .Values.buildCache.enabled }}
+        - name: maven-cache
+          workspace: maven-cache
+        {{- end }}
+    {{- end }}
+    - name: build-and-push
+      runAfter:
+        {{- if .Values.pipeline.tasks.mavenBuild.enabled }}
+        - maven-build
+        {{- else }}
+        - clone-source
+        {{- end }}
+      taskRef:
+        resolver: cluster
+        params:
+          - name: kind
+            value: task
+          - name: name
+            value: buildah
+          - name: namespace
+            value: openshift-pipelines
+      params:
+        - name: IMAGE
+          value: {{ include "build-deployer.imageRef" . | quote }}
+        - name: DOCKERFILE
+          value: {{ .Values.pipeline.tasks.buildAndPush.dockerfile }}
+        - name: TLSVERIFY
+          value: {{ .Values.pipeline.tasks.buildAndPush.tlsVerify | quote }}
+        - name: STORAGE_DRIVER
+          value: {{ .Values.pipeline.tasks.buildAndPush.storageDriver }}
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: dockerconfig
+    - name: acs-image-scan
+      runAfter:
+        - build-and-push
+      taskRef:
+        name: {{ include "build-deployer.name" . }}-acs-image-scan
+      params:
+        - name: IMAGE
+          value: {{ include "build-deployer.imageRef" . | quote }}
+    - name: acs-image-check
+      runAfter:
+        - build-and-push
+      taskRef:
+        name: {{ include "build-deployer.name" . }}-acs-image-check
+      params:
+        - name: IMAGE
+          value: {{ include "build-deployer.imageRef" . | quote }}
+    - name: generate-sbom
+      runAfter:
+        - acs-image-scan
+        - acs-image-check
+      taskRef:
+        name: {{ include "build-deployer.name" . }}-generate-sbom
+      params:
+        - name: IMAGE
+          value: {{ include "build-deployer.imageRef" . | quote }}
+        - name: SOURCE_NAME
+          value: {{ printf "%s-%s" .Values.image.name .Values.source.branch | quote }}
+        - name: SOURCE_VERSION
+          value: $(params.git-revision)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: dockerconfig
+    - name: upload-sbom-to-tpa
+      runAfter:
+        - generate-sbom
+      taskRef:
+        name: {{ include "build-deployer.name" . }}-upload-sbom-to-tpa
+      params:
+        - name: LABEL_DEV
+          value: {{ .Values.devEmail | quote }}
+        - name: LABEL_COMPONENT
+          value: {{ printf "%s-%s" (include "build-deployer.name" .) .Values.owner | quote }}
+      workspaces:
+        - name: source
+          workspace: source
+    - name: rollout-restart
+      runAfter:
+        - upload-sbom-to-tpa
+      taskRef:
+        name: {{ include "build-deployer.name" . }}-rollout-restart
+      params:
+        - name: DEPLOYMENT
+          value: {{ include "build-deployer.name" . }}
+        {{- if .Values.rollout.namespace }}
+        - name: NAMESPACE
+          value: {{ .Values.rollout.namespace | quote }}
+        {{- end }}

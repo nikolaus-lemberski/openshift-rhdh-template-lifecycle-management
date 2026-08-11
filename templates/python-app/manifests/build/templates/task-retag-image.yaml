@@ -1,0 +1,44 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-retag-image
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  description: >-
+    Copy the dev image to a new tag using skopeo. This promotes the exact
+    same image artifact without rebuilding, guaranteeing binary identity
+    between what was tested in dev and what runs in prod.
+  params:
+    - name: SOURCE_IMAGE
+      type: string
+      description: Full source image reference (e.g. registry/org/app:latest)
+    - name: DEST_IMAGE
+      type: string
+      description: Full destination image reference (e.g. registry/org/app:1.0)
+  workspaces:
+    - name: dockerconfig
+      description: Docker config for registry authentication
+  steps:
+    - name: retag
+      image: registry.access.redhat.com/ubi9/skopeo:latest
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Set up registry auth
+        AUTHFILE="/tmp/auth.json"
+        if [ -f "$(workspaces.dockerconfig.path)/.dockerconfigjson" ]; then
+          cp "$(workspaces.dockerconfig.path)/.dockerconfigjson" "${AUTHFILE}"
+        elif [ -f "$(workspaces.dockerconfig.path)/config.json" ]; then
+          cp "$(workspaces.dockerconfig.path)/config.json" "${AUTHFILE}"
+        fi
+
+        echo "Copying $(params.SOURCE_IMAGE) -> $(params.DEST_IMAGE)"
+        skopeo copy \
+          --src-tls-verify=false \
+          --dest-tls-verify=false \
+          --authfile "${AUTHFILE}" \
+          "docker://$(params.SOURCE_IMAGE)" \
+          "docker://$(params.DEST_IMAGE)"
+
+        echo "Image retagged successfully."

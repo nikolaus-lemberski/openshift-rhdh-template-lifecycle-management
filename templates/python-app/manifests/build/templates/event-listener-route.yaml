@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "build-deployer.listenerName" . }}
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  host: {{ printf "el-%s-%s.%s" (include "build-deployer.name" .) .Values.owner .Values.clusterSubdomain }}
+  port:
+    targetPort: http-listener
+  to:
+    kind: Service
+    name: el-{{ include "build-deployer.listenerName" . }}
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

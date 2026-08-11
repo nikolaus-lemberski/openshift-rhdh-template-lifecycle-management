@@ -1,0 +1,47 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: {{ include "build-deployer.pipelineName" . }}-template
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  params:
+    - name: git-revision
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        generateName: {{ include "build-deployer.pipelineName" . }}-
+        namespace: {{ include "build-deployer.namespace" . }}
+        labels:
+          app.kubernetes.io/name: {{ include "build-deployer.name" . }}
+      spec:
+        pipelineRef:
+          name: {{ include "build-deployer.pipelineName" . }}
+        params:
+          - name: git-revision
+            value: $(tt.params.git-revision)
+        workspaces:
+          - name: source
+            volumeClaimTemplate:
+              spec:
+                accessModes:
+                  - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: 2Gi
+          - name: basic-auth
+            secret:
+              secretName: gitlab-basic-auth
+          - name: dockerconfig
+            secret:
+              secretName: quay-push-secret
+          {{- if .Values.pipeline.tasks.sonarScan.enabled }}
+          - name: sonar-credentials
+            secret:
+              secretName: sonarqube-credentials
+          {{- end }}
+          {{- if .Values.buildCache.enabled }}
+          - name: maven-cache
+            persistentVolumeClaim:
+              claimName: {{ include "build-deployer.name" . }}-maven-cache
+          {{- end }}

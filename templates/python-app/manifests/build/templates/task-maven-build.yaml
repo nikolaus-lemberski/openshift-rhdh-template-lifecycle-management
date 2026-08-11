@@ -1,0 +1,23 @@
+{{- if .Values.pipeline.tasks.mavenBuild.enabled }}
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-maven-build
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  workspaces:
+    - name: source
+    - name: maven-cache
+      optional: true
+  steps:
+    - name: maven-build
+      image: {{ .Values.pipeline.tasks.mavenBuild.image }}
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: MAVEN_OPTS
+          value: "-Dmaven.repo.local=$(workspaces.maven-cache.path)/.m2/repository"
+      script: |
+        #!/usr/bin/env bash
+        set -ex
+        mvn package
+{{- end }}

@@ -1,0 +1,111 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-upload-sbom-to-tpa
+  namespace: {{ include "build-deployer.namespace" . }}
+  annotations:
+    task.output.location: results
+    task.results.format: application/text
+    task.results.type: external-link
+    task.results.key: LINK_TO_SBOM
+spec:
+  description: >-
+    Upload a CycloneDX SBOM to Trusted Profile Analyzer (TPA) using the
+    OIDC client credentials flow for authentication.
+  params:
+    - name: TPA_URL
+      type: string
+      default: {{ printf "https://server-trusted-profile-analyzer.%s" .Values.clusterSubdomain | quote }}
+    - name: ISSUER_URL
+      type: string
+      default: {{ printf "https://sso.%s/realms/backstage" .Values.clusterSubdomain | quote }}
+    - name: TPA_SECRET_NAME
+      type: string
+      default: tpa-cli-secret
+    - name: SBOM_PATH
+      type: string
+      default: sbom/sbom-cyclonedx.json
+    - name: LABEL_STAGE
+      type: string
+      default: development
+    - name: LABEL_DEV
+      type: string
+      description: Developer identifier label
+    - name: LABEL_COMPONENT
+      type: string
+      description: RHDH component name label
+  results:
+    - name: LINK_TO_SBOM
+      description: Deep link to the uploaded SBOM in Trusted Profile Analyzer
+  workspaces:
+    - name: source
+  steps:
+    - name: upload-sbom
+      onError: continue
+      image: registry.access.redhat.com/ubi9-minimal:latest
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.TPA_SECRET_NAME)
+              key: client_id
+        - name: CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: $(params.TPA_SECRET_NAME)
+              key: client_secret
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        SBOM_FILE="$(params.SBOM_PATH)"
+        if [ ! -f "${SBOM_FILE}" ]; then
+          echo "ERROR: SBOM file not found at ${SBOM_FILE}" >&2
+          exit 1
+        fi
+
+        echo "Obtaining OIDC access token..."
+        TOKEN=$(curl -sk -X POST "$(params.ISSUER_URL)/protocol/openid-connect/token" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          -d "grant_type=client_credentials" \
+          -d "client_id=${CLIENT_ID}" \
+          -d "client_secret=${CLIENT_SECRET}" \
+          | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+        if [ -z "${TOKEN}" ]; then
+          echo "ERROR: Failed to obtain access token" >&2
+          exit 1
+        fi
+        echo "Access token obtained."
+
+        LABELS="labels.stage=$(params.LABEL_STAGE)"
+        LABELS="${LABELS}&labels.dev=$(params.LABEL_DEV)"
+        LABELS="${LABELS}&labels.component=$(params.LABEL_COMPONENT)"
+
+        echo "Uploading SBOM to TPA..."
+        echo "  URL: $(params.TPA_URL)/api/v2/sbom"
+        echo "  Labels: ${LABELS}"
+
+        HTTP_CODE=$(curl -sk -X POST \
+          "$(params.TPA_URL)/api/v2/sbom?${LABELS}" \
+          -H "Authorization: Bearer ${TOKEN}" \
+          -H "Content-Type: application/json" \
+          --data-binary "@${SBOM_FILE}" \
+          -o /tmp/tpa-response.json \
+          -w "%{http_code}")
+
+        echo "TPA response: HTTP ${HTTP_CODE}"
+        cat /tmp/tpa-response.json
+        echo ""
+
+        if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+          SBOM_ID=$(grep -o '"id":"[^"]*"' /tmp/tpa-response.json | head -1 | cut -d'"' -f4)
+          SBOM_LINK="$(params.TPA_URL)/sboms/${SBOM_ID}"
+          echo "SBOM uploaded successfully."
+          echo "SBOM link: ${SBOM_LINK}"
+          echo -n "${SBOM_LINK}" > $(results.LINK_TO_SBOM.path)
+        else
+          echo "ERROR: SBOM upload failed with HTTP ${HTTP_CODE}" >&2
+          exit 1
+        fi

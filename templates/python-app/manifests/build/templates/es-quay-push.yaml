@@ -1,0 +1,23 @@
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: quay-push-secret
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-secret-store
+    kind: ClusterSecretStore
+  target:
+    name: quay-push-secret
+    creationPolicy: Owner
+    template:
+      type: kubernetes.io/dockerconfigjson
+      data:
+        .dockerconfigjson: |
+          {"auths":{"{{ .Values.image.host }}":{"auth":"{{"{{"}} .auth {{"}}"}}"}}}
+  data:
+    - secretKey: auth
+      remoteRef:
+        key: {{ .Values.secrets.quayPush.vaultKey }}
+        property: value

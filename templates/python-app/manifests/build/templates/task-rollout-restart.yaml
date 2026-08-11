@@ -1,0 +1,23 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: {{ include "build-deployer.name" . }}-rollout-restart
+  namespace: {{ include "build-deployer.namespace" . }}
+spec:
+  params:
+    - name: DEPLOYMENT
+      type: string
+    - name: NAMESPACE
+      type: string
+      default: ""
+  steps:
+    - name: rollout-restart
+      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+      script: |
+        #!/usr/bin/env bash
+        NS_FLAG=""
+        if [ -n "$(params.NAMESPACE)" ]; then
+          NS_FLAG="-n $(params.NAMESPACE)"
+        fi
+        oc rollout restart deployment/$(params.DEPLOYMENT) ${NS_FLAG}
+        oc rollout status deployment/$(params.DEPLOYMENT) ${NS_FLAG} --timeout=300s

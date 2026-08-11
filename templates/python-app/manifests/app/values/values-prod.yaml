@@ -1,0 +1,43 @@
+app:
+  name: ${{ values.name }}
+
+  namespace:
+    name: ${{ values.name }}-prod
+    istio:
+      enabled: true
+
+  image:
+    repository: ${{ values.image_host }}/${{ values.image_organization }}/${{ values.image_name }}
+    tag: latest
+
+  environment: prod
+  runtime: python
+
+  replicas: 2
+
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 20
+
+  route:
+    enabled: true
+
+  waypoint:
+    enabled: true
+
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+
+  vcsUri: "${{ values.source_repo }}"
