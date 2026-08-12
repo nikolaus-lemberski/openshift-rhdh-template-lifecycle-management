@@ -26,8 +26,6 @@ Platform Engineer                            Developer
       |                              8. Review and merge
 ```
 
-
-
 ## How it works
 
 Two fields wire up the lifecycle tracking:
@@ -56,11 +54,7 @@ When the template version changes, the `scaffolder-relation-processor` plugin:
 
 ---
 
-
-
 ## Part 1 — Infrastructure Setup
-
-
 
 ### Prerequisites
 
@@ -68,8 +62,6 @@ When the template version changes, the `scaffolder-relation-processor` plugin:
 - The cluster has been provisioned with RHDH, GitLab CE, OpenShift Pipelines (Tekton), and OpenShift GitOps (ArgoCD)
 - The `rhdh/rhdh-templates` GitLab repo exists (created by the cluster bootstrap)
 - `python3` and `curl` available locally
-
-
 
 ### 1. Push the template to GitLab
 
@@ -99,7 +91,6 @@ GITLAB_TOKEN=glpat-xxxxxxxxxxxx \
 ./scripts/push-template.sh
 ```
 
-
 | Variable            | Default (auto-detected)                                      |
 | ------------------- | ------------------------------------------------------------ |
 | `CLUSTER_SUBDOMAIN` | From `oc get ingresses.config.openshift.io cluster`          |
@@ -107,9 +98,6 @@ GITLAB_TOKEN=glpat-xxxxxxxxxxxx \
 | `QUAY_HOST`         | `quay.<CLUSTER_SUBDOMAIN>`                                   |
 | `GITOPS_NAMESPACE`  | `rhdh-gitops`                                                |
 | `GITLAB_TOKEN`      | From `root-user-personal-token` secret in `gitlab` namespace |
-
-
-
 
 ### 2. Enable automated template lifecycle management
 
@@ -134,15 +122,11 @@ The script configures three things on the cluster:
 3. **Prevents ArgoCD from reverting the changes** — if RHDH is managed by an ArgoCD Application, the script adds `ignoreDifferences` entries for both ConfigMaps so GitOps sync doesn't overwrite them
 4. **Restarts RHDH** and verifies the plugin loaded
 
-
 | Variable           | Default                     |
 | ------------------ | --------------------------- |
 | `RHDH_NAMESPACE`   | `rhdh`                      |
 | `ARGOCD_APP_NAME`  | `developer-hub-application` |
 | `ARGOCD_NAMESPACE` | `openshift-gitops`          |
-
-
-
 
 ### 3. Verify in Developer Hub
 
@@ -150,11 +134,7 @@ Open RHDH at `https://backstage-developer-hub-rhdh.<CLUSTER_SUBDOMAIN>` and navi
 
 ---
 
-
-
 ## Part 2 — Demo Walkthrough
-
-
 
 ### Step 1: Create an application from the template
 
@@ -168,15 +148,11 @@ Open RHDH at `https://backstage-developer-hub-rhdh.<CLUSTER_SUBDOMAIN>` and navi
 
 The template scaffolds two GitLab repositories and bootstraps ArgoCD:
 
-
 | What             | Where                           |
 | ---------------- | ------------------------------- |
 | Source code      | `parasol/my-quarkus-app`        |
 | GitOps manifests | `parasol/my-quarkus-app-gitops` |
 | ArgoCD apps      | `rhdh-gitops` namespace         |
-
-
-
 
 ### Step 2: Watch the pipeline and deployment succeed
 
@@ -199,8 +175,6 @@ oc get pods -n my-quarkus-app-dev
 curl https://my-quarkus-app-my-quarkus-app-dev.<CLUSTER_SUBDOMAIN>/
 # Hello from Quarkus!
 ```
-
-
 
 ### Step 3: Verify lifecycle tracking is wired up
 
@@ -230,15 +204,11 @@ metadata:
     backstage.io/template-version: "1.1.0"  # was "1.0.0"
 ```
 
-
-
 ### Step 5: Push the updated template
 
 ```bash
 ./scripts/push-template.sh
 ```
-
-
 
 ### Step 6: Check for the merge request
 
@@ -261,11 +231,7 @@ If notifications are enabled, the entity owner also receives a notification in D
 
 ---
 
-
-
 ## Template Details
-
-
 
 ### Quarkus Application (`templates/quarkus-app/`)
 
@@ -284,14 +250,12 @@ If notifications are enabled, the entity owner also receives a notification in D
 
 **Template parameters:**
 
-
 | Parameter           | Description                           | Default   |
 | ------------------- | ------------------------------------- | --------- |
 | `name`              | Application name (lowercase, hyphens) | required  |
 | `owner`             | Owning group (picked from catalog)    | required  |
 | `description`       | Short description for the catalog     | optional  |
 | `imageOrganization` | Quay organization                     | `parasol` |
-
 
 **Build pipeline flow (Tekton):**
 
@@ -306,7 +270,6 @@ Production promotion is triggered by git tags, which retag the image and open a 
 
 The local template files use these placeholders which `push-template.sh` replaces at deploy time:
 
-
 | Placeholder             | Replaced with                                          |
 | ----------------------- | ------------------------------------------------------ |
 | `__GITLAB_HOST__`       | GitLab route hostname                                  |
@@ -314,10 +277,7 @@ The local template files use these placeholders which `push-template.sh` replace
 | `__QUAY_HOST__`         | Quay route hostname                                    |
 | `__GITOPS_NAMESPACE__`  | ArgoCD namespace (default: `rhdh-gitops`)              |
 
-
 ---
-
-
 
 ## Project Structure
 
@@ -377,8 +337,6 @@ The local template files use these placeholders which `push-template.sh` replace
                     ├── job-link-push-secret.yaml
                     └── pvc-build-cache.yaml
 ```
-
-
 
 ## Architecture
 

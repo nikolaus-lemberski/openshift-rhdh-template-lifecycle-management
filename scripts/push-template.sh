@@ -37,19 +37,24 @@ echo "    GitLab token      : ${GITLAB_TOKEN:0:10}..."
 echo "    Quay host         : ${QUAY_HOST}"
 echo "    GitOps namespace  : ${GITOPS_NAMESPACE}"
 
+gitlab_api() {
+  local path="$1"
+  shift
+  curl -sk -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" "https://${GITLAB_HOST}/api/v4${path}" "$@"
+}
+
 echo "==> Disabling GitLab Auto DevOps (prevents spurious GitLab CI pipelines)..."
-AUTODEVOPS=$(curl -sk "https://${GITLAB_HOST}/api/v4/application/settings?private_token=${GITLAB_TOKEN}" \
+AUTODEVOPS=$(gitlab_api "/application/settings" \
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('auto_devops_enabled','unknown'))" 2>/dev/null)
 if [[ "${AUTODEVOPS}" == "True" ]]; then
-  curl -sk -X PUT "https://${GITLAB_HOST}/api/v4/application/settings?private_token=${GITLAB_TOKEN}" \
-    --data-urlencode "auto_devops_enabled=false" > /dev/null 2>&1
+  gitlab_api "/application/settings" -X PUT --data-urlencode "auto_devops_enabled=false" > /dev/null 2>&1
   echo "    Disabled Auto DevOps at instance level"
 else
   echo "    Auto DevOps already disabled"
 fi
 
 echo "==> Looking up rhdh-templates project ID..."
-RHDH_TEMPLATES_ID=$(curl -sk "https://${GITLAB_HOST}/api/v4/projects?private_token=${GITLAB_TOKEN}&search=rhdh-templates" \
+RHDH_TEMPLATES_ID=$(gitlab_api "/projects?search=rhdh-templates" \
   | python3 -c "import sys,json; projects=[p for p in json.load(sys.stdin) if p['path_with_namespace']=='rhdh/rhdh-templates']; print(projects[0]['id'] if projects else '')")
 
 if [[ -z "${RHDH_TEMPLATES_ID}" ]]; then
@@ -60,7 +65,7 @@ fi
 echo "    Project ID        : ${RHDH_TEMPLATES_ID}"
 
 echo "==> Fetching current catalog-info.yaml from GitLab..."
-CURRENT_CATALOG=$(curl -sk "https://${GITLAB_HOST}/api/v4/projects/${RHDH_TEMPLATES_ID}/repository/files/catalog-info.yaml/raw?private_token=${GITLAB_TOKEN}&ref=main" 2>/dev/null || echo "")
+CURRENT_CATALOG=$(gitlab_api "/projects/${RHDH_TEMPLATES_ID}/repository/files/catalog-info.yaml/raw?ref=main" 2>/dev/null || echo "")
 
 if echo "${CURRENT_CATALOG}" | grep -q "quarkus-app/template.yaml"; then
   echo "    Quarkus template already registered in catalog-info.yaml"
@@ -71,12 +76,15 @@ else
 fi
 
 echo "==> Fetching list of existing template files from GitLab..."
-EXISTING_FILES=$(curl -sk "https://${GITLAB_HOST}/api/v4/projects/${RHDH_TEMPLATES_ID}/repository/tree?private_token=${GITLAB_TOKEN}&path=templates/quarkus-app&recursive=true&per_page=100" 2>/dev/null \
+EXISTING_FILES=$(gitlab_api "/projects/${RHDH_TEMPLATES_ID}/repository/tree?path=templates/quarkus-app&recursive=true&per_page=100" 2>/dev/null \
   | python3 -c "import sys,json; [print(f['path']) for f in json.load(sys.stdin) if f['type']=='blob']" 2>/dev/null || echo "")
 EXISTING_COUNT=$(echo "${EXISTING_FILES}" | grep -c "." 2>/dev/null || echo "0")
 echo "    Found ${EXISTING_COUNT} existing files"
 
 echo "==> Building commit payload (replacing placeholders with cluster values)..."
+
+PAYLOAD_FILE=$(mktemp)
+trap 'rm -f "${PAYLOAD_FILE}"' EXIT
 
 python3 << PYEOF
 import json, os, re
@@ -137,27 +145,12 @@ for fpath in template_files:
 if update_catalog:
     current = """${CURRENT_CATALOG}"""
     if "./templates/quarkus-app/template.yaml" not in current:
-        # Insert after parasol-insurance-secured line
-        current = current.replace(
-            "    - ./templates/parasol-insurance-secured/template.yaml\n",
-            "    - ./templates/parasol-insurance-secured/template.yaml\n"
-            "    - ./templates/quarkus-app/template.yaml\n"
-        )
-        # If that didn't work (line not found), insert before request-kafka-topic
-        if "./templates/quarkus-app/template.yaml" not in current:
-            current = current.replace(
-                "    - ./templates/request-kafka-topic/template.yaml\n",
-                "    - ./templates/quarkus-app/template.yaml\n"
-                "    - ./templates/request-kafka-topic/template.yaml\n"
-            )
-        # Last resort: append to targets
-        if "./templates/quarkus-app/template.yaml" not in current:
-            current = current.rstrip() + "\n    - ./templates/quarkus-app/template.yaml\n"
-        actions.append({
-            "action": "update",
-            "file_path": "catalog-info.yaml",
-            "content": current,
-        })
+        current = current.rstrip() + "\n    - ./templates/quarkus-app/template.yaml\n"
+    actions.append({
+        "action": "update",
+        "file_path": "catalog-info.yaml",
+        "content": current,
+    })
 
 payload = {
     "branch": "main",
@@ -165,7 +158,7 @@ payload = {
     "actions": actions,
 }
 
-with open("/tmp/gitlab-quarkus-template-payload.json", "w") as f:
+with open("${PAYLOAD_FILE}", "w") as f:
     json.dump(payload, f)
 
 creates = sum(1 for a in actions if a["action"] == "create")
@@ -176,18 +169,17 @@ PYEOF
 if [[ "${DRY_RUN}" == "true" ]]; then
   echo ""
   echo "==> DRY RUN: Would push the following files to rhdh/rhdh-templates (project ${RHDH_TEMPLATES_ID}):"
-  python3 -c "import json; data=json.load(open('/tmp/gitlab-quarkus-template-payload.json')); [print(f'    {a[\"action\"]}: {a[\"file_path\"]}') for a in data['actions']]"
+  python3 -c "import json; data=json.load(open('${PAYLOAD_FILE}')); [print(f'    {a[\"action\"]}: {a[\"file_path\"]}') for a in data['actions']]"
   echo ""
   echo "    To actually push, run without --dry-run"
   exit 0
 fi
 
 echo "==> Pushing to GitLab..."
-RESPONSE=$(curl -sk -w "\n%{http_code}" -X POST \
-  "https://${GITLAB_HOST}/api/v4/projects/${RHDH_TEMPLATES_ID}/repository/commits" \
-  -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+RESPONSE=$(gitlab_api "/projects/${RHDH_TEMPLATES_ID}/repository/commits" \
+  -w "\n%{http_code}" -X POST \
   -H "Content-Type: application/json" \
-  -d @/tmp/gitlab-quarkus-template-payload.json)
+  -d @"${PAYLOAD_FILE}")
 
 HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
 BODY=$(echo "${RESPONSE}" | sed '$d')
@@ -212,5 +204,3 @@ else
   echo "${BODY}" | python3 -m json.tool 2>/dev/null || echo "${BODY}"
   exit 1
 fi
-
-rm -f /tmp/gitlab-quarkus-template-payload.json

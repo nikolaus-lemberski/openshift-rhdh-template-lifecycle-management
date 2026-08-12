@@ -109,11 +109,7 @@ entry = '''
   - package: ${PLUGIN_PACKAGE}
     disabled: false
 '''
-marker = '  # SonarQube'
-if marker in content:
-    content = content.replace(marker, entry.rstrip() + '\n\n  # SonarQube')
-else:
-    content = content.rstrip() + '\n' + entry
+content = content.rstrip() + '\n' + entry
 open('${TMPFILE}', 'w').write(content)
 "
   fi
