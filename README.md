@@ -154,9 +154,18 @@ The template scaffolds two GitLab repositories and bootstraps ArgoCD:
 | GitOps manifests | `parasol/my-quarkus-app-gitops` |
 | ArgoCD apps      | `rhdh-gitops` namespace         |
 
-### Step 2: Watch the pipeline and deployment succeed
+### Step 2: Trigger the first pipeline run
 
-The Tekton pipeline triggers automatically on the initial push:
+The GitLab webhook that feeds the Tekton pipeline is registered by a job that runs *after* ArgoCD syncs the build chart, which happens *after* the scaffolder has already pushed the skeleton's initial commit. That means the very first push isn't seen by the webhook — you need to make a small change and commit it to the source repo (`parasol/my-quarkus-app`) to trigger the first pipeline run:
+
+```bash
+git clone https://<gitlab-host>/parasol/my-quarkus-app.git
+cd my-quarkus-app
+git commit --allow-empty -m "Trigger initial pipeline run"
+git push
+```
+
+This kicks off:
 
 ```
 git-clone -> maven-build -> buildah build+push -> ACS scan -> SBOM generation -> rollout-restart
