@@ -191,28 +191,6 @@ if [[ "${HTTP_CODE}" == "201" ]]; then
   echo "==> Success! Commit ${COMMIT_SHA}"
   echo "    ${COMMIT_URL}"
   echo ""
-
-  echo "==> Tagging local skeleton state for scoped diff propagation..."
-  TEMPLATE_VERSION=$(python3 -c "
-import re
-content = open('${PROJECT_DIR}/templates/quarkus-app/template.yaml').read()
-m = re.search(r'backstage\.io/template-version:\s*[\"\']?([0-9][0-9A-Za-z.-]*)[\"\']?', content)
-print(m.group(1) if m else '')
-")
-  if [[ -n "${TEMPLATE_VERSION}" ]]; then
-    VERSION_TAG="quarkus-app-v${TEMPLATE_VERSION}"
-    if git -C "${PROJECT_DIR}" rev-parse "${VERSION_TAG}" &>/dev/null; then
-      echo "    Tag ${VERSION_TAG} already exists locally, skipping"
-    else
-      git -C "${PROJECT_DIR}" tag "${VERSION_TAG}"
-      echo "    Tagged ${VERSION_TAG} — propagate-skeleton-diff.sh diffs between consecutive"
-      echo "    'quarkus-app-v*' tags to compute the scoped skeleton change"
-    fi
-  else
-    echo "    WARNING: Could not read backstage.io/template-version from template.yaml, skipping tag"
-  fi
-  echo ""
-
   echo "    The template will appear in Developer Hub within ~5 minutes"
   echo "    (GitLab catalog provider refresh interval)."
   echo ""

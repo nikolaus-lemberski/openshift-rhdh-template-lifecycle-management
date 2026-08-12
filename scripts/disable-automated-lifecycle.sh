@@ -46,10 +46,14 @@ CURRENT_APPCONFIG=$(oc get configmap app-config-rhdh -n "${RHDH_NAMESPACE}" -o j
 
 is_pr_creation_enabled() {
   local current="$1"
-  echo "${current}" | grep -A 1 "pullRequests:" | grep -A 1 "templateUpdate:" | grep -q "enabled: true"
+  echo "${current}" | python3 -c "
+import re, sys
+content = sys.stdin.read()
+sys.exit(0 if re.search(r'pullRequests:\s*\n\s*templateUpdate:\s*\n\s*enabled:\s*true', content) else 1)
+"
 }
 
-if echo "${CURRENT_APPCONFIG}" | grep -q "pullRequests:" && is_pr_creation_enabled "${CURRENT_APPCONFIG}"; then
+if is_pr_creation_enabled "${CURRENT_APPCONFIG}"; then
   echo "    scaffolder.pullRequests.templateUpdate is enabled, will disable it"
   NEEDS_UPDATE=true
 else

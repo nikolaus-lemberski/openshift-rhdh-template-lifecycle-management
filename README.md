@@ -285,3 +285,84 @@ oc logs deploy/backstage-developer-hub -n rhdh -c backstage-backend --since=10m 
 ```
 
 If you see `Received template update event for ...` but still no MR, the failure is downstream (GitLab token permissions, VCS integration config, or the `backstage.io/managed-by-location` annotation not being a `url:`-type location) — check the plugin's own troubleshooting notes for those cases.
+
+---
+
+## Part 3 — Alternative: Scoped Diff Propagation
+
+The `scaffolder-relation-processor` plugin always fetches the **current** skeleton and the **current** state of each downstream repo and diffs those directly (confirmed in its [Template Update PRs docs](https://github.com/backstage/community-plugins/blob/main/workspaces/scaffolder-relation-processor/plugins/catalog-backend-module-scaffolder-relation-processor/docs/templateUpdatePRs.md) — there's no config option to narrow this). In practice, a project makes plenty of its own changes to skeleton-tracked files, and every one of them shows up in the MR alongside the actual update, which makes the MR noisy and risky to merge without a careful manual review of every hunk.
+
+`propagate-skeleton-diff.sh` takes a different approach, closer to how tools like `cruft`/`copier update` sync templates: it diffs the last two commits `push-template.sh` already pushed to `rhdh/rhdh-templates` in GitLab (via GitLab's compare API, scoped to `templates/quarkus-app/skeleton`) and tries to apply exactly that patch to each downstream repo. A repo is only touched if the patch applies cleanly; otherwise it's skipped and reported so the platform engineer can merge it by hand. This keeps the MR scoped to what actually changed in the template — e.g. just the `quarkus.platform.version` bump — regardless of what else a project has customized.
+
+GitLab's already-pushed history is used as the source of truth rather than local git tags in this repo. `push-template.sh` pushes straight from whatever is on disk, so a local tag would silently point at the wrong commit if you forgot to `git commit` your skeleton edits first — GitLab's history can't drift like that, since every `push-template.sh` run creates exactly one real commit there.
+
+### Trade-offs
+
+- Downstream repos are found by querying the RHDH catalog for `scaffoldedFrom` relations, so the relation-processor plugin (and `catalog:register`) must still be enabled — only its own PR creation is turned off.
+- No template-variable resolution is attempted; the raw skeleton diff is applied as-is. This works well for simple changes like a version bump, but a patch that touches a line containing `${{ values.* }}` in the skeleton is unlikely to apply cleanly against the substituted downstream file, and that repo will just be reported as skipped rather than silently corrupted.
+- Needs at least two `push-template.sh` runs in `rhdh/rhdh-templates`' history to have anything to diff — see Step 2 below.
+
+### Step 1: Disable the plugin's automatic full-diff MRs
+
+```bash
+./scripts/disable-automated-lifecycle.sh              # apply
+./scripts/disable-automated-lifecycle.sh --dry-run     # preview
+```
+
+This flips `scaffolder.pullRequests.templateUpdate.enabled` to `false` in `app-config-rhdh` and restarts RHDH. The relation-processor plugin itself and notifications are left enabled.
+
+### Step 2: Re-run the tutorial workflow
+
+Repeat the [Part 2 walkthrough](#part-2--demo-walkthrough) end to end — as a developer, create a fresh app from the template (Step 1) and get its first pipeline run going (Step 2); as a platform engineer, bump the Quarkus version in the skeleton and the `template.yaml` version annotation (Step 4), then push it:
+
+```bash
+./scripts/push-template.sh
+```
+
+The very first version you ever push has nothing to diff against yet, so this alternative only kicks in from the second version onward. If you're starting fresh, push once at the original version, then bump and push again before continuing.
+
+### Step 3: Propagate the scoped diff
+
+```bash
+./scripts/propagate-skeleton-diff.sh                            # diff the last two pushed commits, open MRs
+./scripts/propagate-skeleton-diff.sh --dry-run                  # show the diff and which repos would get a clean patch, without pushing anything
+./scripts/propagate-skeleton-diff.sh --from-sha <sha> --to-sha <sha>   # override which two commits to diff
+```
+
+Instead of waiting ~5 minutes for the plugin's catalog-driven detection, this runs on demand. It prints the scoped file diff, finds every repo scaffolded from `template:default/quarkus-app` via the RHDH catalog, and opens a merge request per repo where the patch applies cleanly — containing only the version bump, not a full-repo comparison.
+
+![Merge request with only pom.xml changed, unlike the plugin's full-repo diff](img/5_merge_diff_only_one_file_changed.png)
+
+Real Backstage/RHDH backends enforce auth on the catalog API by default, so an unauthenticated call gets a `401 AuthenticationError: Missing credentials`. If `RHDH_TOKEN` isn't set, the script first tries Backstage's guest auth provider (`POST /api/auth/guest/refresh`) to get a short-lived token — this works out of the box on clusters where guest auth is enabled. On clusters where sign-in goes through OIDC/Keycloak instead (no guest auth), that attempt returns 404 and you need to set `RHDH_TOKEN` yourself.
+
+The most reliable source for that token is a static service-to-service token RHDH already has configured — check `app-config-rhdh` for a `backend.auth.externalAccess` entry (e.g. `subject: api-clients`) and find the Secret backing its `token` env var:
+
+```bash
+oc get deploy backstage-developer-hub -n rhdh -o json \
+  | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for c in d['spec']['template']['spec']['containers']:
+    for ef in c.get('envFrom', []):
+        print(c['name'], ef.get('secretRef', {}).get('name'))
+"
+```
+
+Once you know which Secret and key back it (e.g. `backend-secret` / `BACKEND_SECRET`):
+
+```bash
+export RHDH_TOKEN=$(oc get secret backend-secret -n rhdh -o jsonpath='{.data.BACKEND_SECRET}' | base64 -d)
+./scripts/propagate-skeleton-diff.sh
+```
+
+This authenticates as a service identity rather than a specific human user, which is the right fit for an automated script. Note that authenticating successfully doesn't guarantee authorization — if RHDH's permission framework/RBAC plugin restricts what that subject can read, you'd still see a 401/403 and would need to check the RBAC policy next.
+
+### From script to production plugin
+
+This script is a stand-in for a demo — the shell/`oc`/manual-token plumbing doesn't belong in a real platform. But the *logic* (diff two versions via the VCS compare API scoped to the skeleton path, find `scaffoldedFrom` entities via the catalog, `git apply` per repo, open an MR where it applies cleanly) maps directly onto Backstage backend plugin primitives, largely the same ones `scaffolder-relation-processor` already uses:
+
+- The template-version-change trigger already exists as an in-process event in that plugin — a production version would hook into the same trigger instead of being run by hand.
+- Backstage's `ScmIntegrations` gives authenticated GitHub/GitLab clients for free, replacing the manual `GITLAB_TOKEN`/`oc get secret` dance.
+- The in-process catalog client replaces the external `RHDH_TOKEN` + HTTP call to `/api/catalog/entities`.
+
+The cleanest production path is arguably not a brand-new plugin at all, but a `diffMode: scoped` (or similar) config option contributed upstream to `scaffolder-relation-processor` — the surrounding plumbing (detection, catalog lookup, PR/MR creation, reviewer assignment, notifications) is already correct; only the full-repo-vs-scoped-version diff strategy needs to become a choice instead of the only option.
