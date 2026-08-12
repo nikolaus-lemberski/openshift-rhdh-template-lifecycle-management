@@ -1,14 +1,14 @@
 apiVersion: scaffolder.backstage.io/v1beta3
 kind: Template
 metadata:
-  name: python-flask-app
-  title: Python Flask Application
-  description: Create a Python Flask application with CI/CD pipeline, dev deployment, and production promotion
+  name: quarkus-app
+  title: Quarkus Application
+  description: Create a Quarkus application with CI/CD pipeline, dev deployment, and production promotion
   annotations:
     backstage.io/template-version: "1.0.0"
   tags:
-    - python
-    - flask
+    - java
+    - quarkus
     - rest-api
 spec:
   owner: rhdh
@@ -89,7 +89,6 @@ spec:
           gitlab_host: __GITLAB_HOST__
           cluster_subdomain: __CLUSTER_SUBDOMAIN__
           gitops_namespace: __GITOPS_NAMESPACE__
-          chart_repo_url: __CHART_REPO_URL__
 
     - id: publish-manifests
       name: Publish Manifests to GitLab

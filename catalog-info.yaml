@@ -1,8 +1,8 @@
 apiVersion: backstage.io/v1alpha1
 kind: Location
 metadata:
-  name: python-app-templates
-  description: Python application templates for Red Hat Developer Hub
+  name: quarkus-app-templates
+  description: Quarkus application templates for Red Hat Developer Hub
 spec:
   targets:
-    - ./templates/python-app/template.yaml
+    - ./templates/quarkus-app/template.yaml

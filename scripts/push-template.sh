@@ -2,7 +2,7 @@
 set -euo pipefail
 
 #
-# Push the Python Flask template into the rhdh-templates GitLab repo on a fresh cluster.
+# Push the Quarkus template into the rhdh-templates GitLab repo on a fresh cluster.
 #
 # Prerequisites:
 #   - oc CLI logged in to the target OpenShift cluster (oc login ...)
@@ -30,16 +30,12 @@ GITLAB_HOST="${GITLAB_HOST:-gitlab-gitlab.${CLUSTER_SUBDOMAIN}}"
 GITLAB_TOKEN="${GITLAB_TOKEN:-$(oc get secret root-user-personal-token -n gitlab -o jsonpath='{.data.token}' | base64 -d)}"
 QUAY_HOST="${QUAY_HOST:-quay.${CLUSTER_SUBDOMAIN}}"
 GITOPS_NAMESPACE="${GITOPS_NAMESPACE:-rhdh-gitops}"
-HELM_CHARTS_PROJECT_ID="${HELM_CHARTS_PROJECT_ID:-$(curl -sk "https://${GITLAB_HOST}/api/v4/projects?private_token=${GITLAB_TOKEN}&search=helm-charts" \
-  | python3 -c "import sys,json; projects=[p for p in json.load(sys.stdin) if p['path_with_namespace']=='rhdh/helm-charts']; print(projects[0]['id'] if projects else '5')" 2>/dev/null)}"
-CHART_REPO_URL="${CHART_REPO_URL:-https://${GITLAB_HOST}/api/v4/projects/${HELM_CHARTS_PROJECT_ID}/packages/helm/stable}"
 
 echo "    Cluster subdomain : ${CLUSTER_SUBDOMAIN}"
 echo "    GitLab host       : ${GITLAB_HOST}"
 echo "    GitLab token      : ${GITLAB_TOKEN:0:10}..."
 echo "    Quay host         : ${QUAY_HOST}"
 echo "    GitOps namespace  : ${GITOPS_NAMESPACE}"
-echo "    Chart repo URL    : ${CHART_REPO_URL}"
 
 echo "==> Disabling GitLab Auto DevOps (prevents spurious GitLab CI pipelines)..."
 AUTODEVOPS=$(curl -sk "https://${GITLAB_HOST}/api/v4/application/settings?private_token=${GITLAB_TOKEN}" \
@@ -66,16 +62,16 @@ echo "    Project ID        : ${RHDH_TEMPLATES_ID}"
 echo "==> Fetching current catalog-info.yaml from GitLab..."
 CURRENT_CATALOG=$(curl -sk "https://${GITLAB_HOST}/api/v4/projects/${RHDH_TEMPLATES_ID}/repository/files/catalog-info.yaml/raw?private_token=${GITLAB_TOKEN}&ref=main" 2>/dev/null || echo "")
 
-if echo "${CURRENT_CATALOG}" | grep -q "python-app/template.yaml"; then
-  echo "    Python template already registered in catalog-info.yaml"
+if echo "${CURRENT_CATALOG}" | grep -q "quarkus-app/template.yaml"; then
+  echo "    Quarkus template already registered in catalog-info.yaml"
   UPDATE_CATALOG=false
 else
-  echo "    Python template NOT yet in catalog-info.yaml, will add it"
+  echo "    Quarkus template NOT yet in catalog-info.yaml, will add it"
   UPDATE_CATALOG=true
 fi
 
 echo "==> Fetching list of existing template files from GitLab..."
-EXISTING_FILES=$(curl -sk "https://${GITLAB_HOST}/api/v4/projects/${RHDH_TEMPLATES_ID}/repository/tree?private_token=${GITLAB_TOKEN}&path=templates/python-app&recursive=true&per_page=100" 2>/dev/null \
+EXISTING_FILES=$(curl -sk "https://${GITLAB_HOST}/api/v4/projects/${RHDH_TEMPLATES_ID}/repository/tree?private_token=${GITLAB_TOKEN}&path=templates/quarkus-app&recursive=true&per_page=100" 2>/dev/null \
   | python3 -c "import sys,json; [print(f['path']) for f in json.load(sys.stdin) if f['type']=='blob']" 2>/dev/null || echo "")
 EXISTING_COUNT=$(echo "${EXISTING_FILES}" | grep -c "." 2>/dev/null || echo "0")
 echo "    Found ${EXISTING_COUNT} existing files"
@@ -94,29 +90,35 @@ replacements = {
     "__CLUSTER_SUBDOMAIN__": "${CLUSTER_SUBDOMAIN}",
     "__QUAY_HOST__": "${QUAY_HOST}",
     "__GITOPS_NAMESPACE__": "${GITOPS_NAMESPACE}",
-    "__CHART_REPO_URL__": "${CHART_REPO_URL}",
 }
 
 template_files = [
-    "templates/python-app/template.yaml",
-    "templates/python-app/skeleton/app.py",
-    "templates/python-app/skeleton/requirements.txt",
-    "templates/python-app/skeleton/Containerfile",
-    "templates/python-app/skeleton/catalog-info.yaml",
-    "templates/python-app/skeleton/.gitignore",
-    "templates/python-app/manifests/argocd/app-dev.yaml",
-    "templates/python-app/manifests/argocd/build.yaml",
-    "templates/python-app/manifests/app/Chart.yaml",
-    "templates/python-app/manifests/app/values/values-dev.yaml",
-    "templates/python-app/manifests/app/values/values-prod.yaml",
-    "templates/python-app/manifests/build/Chart.yaml",
-    "templates/python-app/manifests/build/values.yaml",
+    "templates/quarkus-app/template.yaml",
+    "templates/quarkus-app/skeleton/pom.xml",
+    "templates/quarkus-app/skeleton/Containerfile",
+    "templates/quarkus-app/skeleton/catalog-info.yaml",
+    "templates/quarkus-app/skeleton/.gitignore",
+    "templates/quarkus-app/skeleton/.dockerignore",
+    "templates/quarkus-app/skeleton/src/main/java/org/acme/GreetingResource.java",
+    "templates/quarkus-app/skeleton/src/main/resources/application.properties",
+    "templates/quarkus-app/manifests/argocd/app-dev.yaml",
+    "templates/quarkus-app/manifests/argocd/build.yaml",
+    "templates/quarkus-app/manifests/app/Chart.yaml",
+    "templates/quarkus-app/manifests/app/values/values-dev.yaml",
+    "templates/quarkus-app/manifests/app/values/values-prod.yaml",
+    "templates/quarkus-app/manifests/build/Chart.yaml",
+    "templates/quarkus-app/manifests/build/values.yaml",
 ]
 
+# Add all app Helm templates
+app_templates_dir = os.path.join(project_dir, "templates/quarkus-app/manifests/app/templates")
+for fname in sorted(os.listdir(app_templates_dir)):
+    template_files.append(f"templates/quarkus-app/manifests/app/templates/{fname}")
+
 # Add all build Helm templates
-build_templates_dir = os.path.join(project_dir, "templates/python-app/manifests/build/templates")
+build_templates_dir = os.path.join(project_dir, "templates/quarkus-app/manifests/build/templates")
 for fname in sorted(os.listdir(build_templates_dir)):
-    template_files.append(f"templates/python-app/manifests/build/templates/{fname}")
+    template_files.append(f"templates/quarkus-app/manifests/build/templates/{fname}")
 
 actions = []
 for fpath in template_files:
@@ -134,23 +136,23 @@ for fpath in template_files:
 
 if update_catalog:
     current = """${CURRENT_CATALOG}"""
-    if "./templates/python-app/template.yaml" not in current:
+    if "./templates/quarkus-app/template.yaml" not in current:
         # Insert after parasol-insurance-secured line
         current = current.replace(
             "    - ./templates/parasol-insurance-secured/template.yaml\n",
             "    - ./templates/parasol-insurance-secured/template.yaml\n"
-            "    - ./templates/python-app/template.yaml\n"
+            "    - ./templates/quarkus-app/template.yaml\n"
         )
         # If that didn't work (line not found), insert before request-kafka-topic
-        if "./templates/python-app/template.yaml" not in current:
+        if "./templates/quarkus-app/template.yaml" not in current:
             current = current.replace(
                 "    - ./templates/request-kafka-topic/template.yaml\n",
-                "    - ./templates/python-app/template.yaml\n"
+                "    - ./templates/quarkus-app/template.yaml\n"
                 "    - ./templates/request-kafka-topic/template.yaml\n"
             )
         # Last resort: append to targets
-        if "./templates/python-app/template.yaml" not in current:
-            current = current.rstrip() + "\n    - ./templates/python-app/template.yaml\n"
+        if "./templates/quarkus-app/template.yaml" not in current:
+            current = current.rstrip() + "\n    - ./templates/quarkus-app/template.yaml\n"
         actions.append({
             "action": "update",
             "file_path": "catalog-info.yaml",
@@ -159,11 +161,11 @@ if update_catalog:
 
 payload = {
     "branch": "main",
-    "commit_message": "Add Python Flask application template with CI/CD pipeline and ArgoCD",
+    "commit_message": "Add Quarkus application template with CI/CD pipeline and ArgoCD",
     "actions": actions,
 }
 
-with open("/tmp/gitlab-python-template-payload.json", "w") as f:
+with open("/tmp/gitlab-quarkus-template-payload.json", "w") as f:
     json.dump(payload, f)
 
 creates = sum(1 for a in actions if a["action"] == "create")
@@ -174,7 +176,7 @@ PYEOF
 if [[ "${DRY_RUN}" == "true" ]]; then
   echo ""
   echo "==> DRY RUN: Would push the following files to rhdh/rhdh-templates (project ${RHDH_TEMPLATES_ID}):"
-  python3 -c "import json; data=json.load(open('/tmp/gitlab-python-template-payload.json')); [print(f'    {a[\"action\"]}: {a[\"file_path\"]}') for a in data['actions']]"
+  python3 -c "import json; data=json.load(open('/tmp/gitlab-quarkus-template-payload.json')); [print(f'    {a[\"action\"]}: {a[\"file_path\"]}') for a in data['actions']]"
   echo ""
   echo "    To actually push, run without --dry-run"
   exit 0
@@ -185,7 +187,7 @@ RESPONSE=$(curl -sk -w "\n%{http_code}" -X POST \
   "https://${GITLAB_HOST}/api/v4/projects/${RHDH_TEMPLATES_ID}/repository/commits" \
   -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d @/tmp/gitlab-python-template-payload.json)
+  -d @/tmp/gitlab-quarkus-template-payload.json)
 
 HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
 BODY=$(echo "${RESPONSE}" | sed '$d')
@@ -211,4 +213,4 @@ else
   exit 1
 fi
 
-rm -f /tmp/gitlab-python-template-payload.json
+rm -f /tmp/gitlab-quarkus-template-payload.json

@@ -8,7 +8,7 @@ Setup from Demo catalog: [OpenShift Advanced App Platform Demo](https://catalog.
 
 ## Overview
 
-A platform engineer publishes a Python Flask Software Template. Developers create applications from it through the RHDH self-service catalog. Later, the platform engineer updates the skeleton (e.g. a security patch to the Containerfile, a new health endpoint). The `scaffolder-relation-processor` plugin detects the version bump, compares the skeleton against every downstream repo, and opens a merge request with the differences.
+A platform engineer publishes a Quarkus Software Template. Developers create applications from it through the RHDH self-service catalog. Later, the platform engineer updates the skeleton (e.g. a Quarkus version upgrade for a security patch or new features). The `scaffolder-relation-processor` plugin detects the version bump, compares the skeleton against every downstream repo, and opens a merge request with the differences.
 
 ```
 Platform Engineer                            Developer
@@ -44,7 +44,7 @@ metadata:
 
 ```yaml
 spec:
-  scaffoldedFrom: template:default/python-flask-app
+  scaffoldedFrom: template:default/quarkus-app
 ```
 
 When the template version changes, the `scaffolder-relation-processor` plugin:
@@ -67,7 +67,6 @@ When the template version changes, the `scaffolder-relation-processor` plugin:
 - `oc` CLI logged in to the OpenShift cluster as admin
 - The cluster has been provisioned with RHDH, GitLab CE, OpenShift Pipelines (Tekton), and OpenShift GitOps (ArgoCD)
 - The `rhdh/rhdh-templates` GitLab repo exists (created by the cluster bootstrap)
-- The `app-deployer` Helm chart is published in the GitLab Package Registry (`rhdh/helm-charts`)
 - `python3` and `curl` available locally
 
 
@@ -107,7 +106,6 @@ GITLAB_TOKEN=glpat-xxxxxxxxxxxx \
 | `GITLAB_HOST`       | `gitlab-gitlab.<CLUSTER_SUBDOMAIN>`                          |
 | `QUAY_HOST`         | `quay.<CLUSTER_SUBDOMAIN>`                                   |
 | `GITOPS_NAMESPACE`  | `rhdh-gitops`                                                |
-| `CHART_REPO_URL`    | GitLab Package Registry URL for the `app-deployer` chart     |
 | `GITLAB_TOKEN`      | From `root-user-personal-token` secret in `gitlab` namespace |
 
 
@@ -148,7 +146,7 @@ The script configures three things on the cluster:
 
 ### 3. Verify in Developer Hub
 
-Open RHDH at `https://backstage-developer-hub-rhdh.<CLUSTER_SUBDOMAIN>` and navigate to **Create** in the sidebar. The "Python Flask Application" template should appear after the catalog refreshes (~5 minutes).
+Open RHDH at `https://backstage-developer-hub-rhdh.<CLUSTER_SUBDOMAIN>` and navigate to **Create** in the sidebar. The "Quarkus Application" template should appear after the catalog refreshes (~5 minutes).
 
 ---
 
@@ -161,9 +159,9 @@ Open RHDH at `https://backstage-developer-hub-rhdh.<CLUSTER_SUBDOMAIN>` and navi
 ### Step 1: Create an application from the template
 
 1. Open Developer Hub and go to **Create**
-2. Select the **Python Flask Application** template
+2. Select the **Quarkus Application** template
 3. Fill in:
-  - **Application Name**: e.g. `my-flask-app`
+  - **Application Name**: e.g. `my-quarkus-app`
   - **Owner**: select a group from the catalog
   - **Image Organization**: leave as `parasol` (or your Quay org)
 4. Click **Create**
@@ -171,11 +169,11 @@ Open RHDH at `https://backstage-developer-hub-rhdh.<CLUSTER_SUBDOMAIN>` and navi
 The template scaffolds two GitLab repositories and bootstraps ArgoCD:
 
 
-| What             | Where                         |
-| ---------------- | ----------------------------- |
-| Source code      | `parasol/my-flask-app`        |
-| GitOps manifests | `parasol/my-flask-app-gitops` |
-| ArgoCD apps      | `rhdh-gitops` namespace       |
+| What             | Where                           |
+| ---------------- | ------------------------------- |
+| Source code      | `parasol/my-quarkus-app`        |
+| GitOps manifests | `parasol/my-quarkus-app-gitops` |
+| ArgoCD apps      | `rhdh-gitops` namespace         |
 
 
 
@@ -185,46 +183,46 @@ The template scaffolds two GitLab repositories and bootstraps ArgoCD:
 The Tekton pipeline triggers automatically on the initial push:
 
 ```
-git-clone -> buildah build+push -> ACS scan -> SBOM generation -> rollout-restart
+git-clone -> maven-build -> buildah build+push -> ACS scan -> SBOM generation -> rollout-restart
 ```
 
 Check progress in Developer Hub under the component's **CI** tab (Tekton plugin), or directly:
 
 ```bash
-oc get pipelineruns -n my-flask-app-build
+oc get pipelineruns -n my-quarkus-app-build
 ```
 
 Once the pipeline completes, ArgoCD deploys the app to the dev namespace:
 
 ```bash
-oc get pods -n my-flask-app-dev
-curl https://my-flask-app-my-flask-app-dev.<CLUSTER_SUBDOMAIN>/hello
-# {"message":"Hello from Flask!"}
+oc get pods -n my-quarkus-app-dev
+curl https://my-quarkus-app-my-quarkus-app-dev.<CLUSTER_SUBDOMAIN>/
+# Hello from Quarkus!
 ```
 
 
 
 ### Step 3: Verify lifecycle tracking is wired up
 
-Confirm the scaffolded app's `catalog-info.yaml` in GitLab (`parasol/my-flask-app`) contains:
+Confirm the scaffolded app's `catalog-info.yaml` in GitLab (`parasol/my-quarkus-app`) contains:
 
 ```yaml
 spec:
-  scaffoldedFrom: template:default/python-flask-app
+  scaffoldedFrom: template:default/quarkus-app
 ```
 
 In Developer Hub, the component's relations should show a `scaffoldedFrom` link back to the template.
 
 ### Step 4: Update the template skeleton
 
-Suppose a vulnerability is found in the Python 3.12 base image and all applications must move to Python 3.14. Update the Containerfile in the skeleton:
+Suppose a new Quarkus version is available with security fixes and all applications must be upgraded. Update the Quarkus platform version in `pom.xml` in the skeleton:
 
-```dockerfile
-# was: registry.access.redhat.com/ubi9/python-312:latest
-FROM registry.access.redhat.com/ubi9/python-314:latest
+```xml
+<!-- was: 3.15.1 -->
+<quarkus.platform.version>3.21.0</quarkus.platform.version>
 ```
 
-Then bump the template version in `templates/python-app/template.yaml`:
+Then bump the template version in `templates/quarkus-app/template.yaml`:
 
 ```yaml
 metadata:
@@ -244,13 +242,13 @@ metadata:
 
 ### Step 6: Check for the merge request
 
-Wait ~5 minutes for the RHDH catalog to refresh and the plugin to detect the version change. Then check GitLab for a merge request in `parasol/my-flask-app` named something like:
+Wait ~5 minutes for the RHDH catalog to refresh and the plugin to detect the version change. Then check GitLab for a merge request in `parasol/my-quarkus-app` named something like:
 
 ```
-my-flask-app/template-upgrade-v1.1.0
+my-quarkus-app/template-upgrade-v1.1.0
 ```
 
-The MR contains the diff between the old and new skeleton files. Review it and merge to apply the update.
+The MR contains the diff between the old and new skeleton files — in this case, the Quarkus version change in `pom.xml`. Review it and merge to apply the update.
 
 If notifications are enabled, the entity owner also receives a notification in Developer Hub with a link to the MR.
 
@@ -269,17 +267,18 @@ If notifications are enabled, the entity owner also receives a notification in D
 
 
 
-### Python Flask Application (`templates/python-app/`)
+### Quarkus Application (`templates/quarkus-app/`)
 
 **What the template creates when a developer uses it:**
 
 1. **Source repository** in GitLab (`parasol/<app-name>`) containing:
-  - A Flask application with health check (`/`) and hello endpoint (`/hello`)
-  - `Containerfile` based on UBI9 Python 3.12 with Gunicorn
+  - A Quarkus application with health checks (`/q/health`) and hello endpoint (`/`)
+  - `pom.xml` with Quarkus 3.15.1 (RESTEasy Reactive + SmallRye Health)
+  - `Containerfile` (single-stage, UBI9 OpenJDK 21 runtime) that packages the artifacts produced by the pipeline's `maven-build` task
   - `catalog-info.yaml` with `spec.scaffoldedFrom` for lifecycle tracking
 2. **GitOps repository** in GitLab (`parasol/<app-name>-gitops`) containing:
   - ArgoCD Application definitions (dev deployment + build pipeline)
-  - Helm chart for app deployment (wraps the shared `app-deployer` chart)
+  - Self-contained Helm chart for app deployment (Namespace, Deployment, Service, Route, HPA)
   - Self-contained Helm chart for the Tekton build pipeline
 3. **ArgoCD Applications** in the `rhdh-gitops` namespace that sync and deploy everything
 
@@ -298,7 +297,7 @@ If notifications are enabled, the entity owner also receives a notification in D
 
 ```
 git push --> GitLab webhook --> EventListener --> Pipeline:
-  clone-source -> buildah build+push -> ACS scan -> SBOM -> rollout-restart
+  clone-source -> maven-build -> buildah build+push -> ACS scan -> SBOM -> rollout-restart
 ```
 
 Production promotion is triggered by git tags, which retag the image and open a merge request to update the prod values.
@@ -314,7 +313,6 @@ The local template files use these placeholders which `push-template.sh` replace
 | `__CLUSTER_SUBDOMAIN__` | OpenShift apps subdomain                               |
 | `__QUAY_HOST__`         | Quay route hostname                                    |
 | `__GITOPS_NAMESPACE__`  | ArgoCD namespace (default: `rhdh-gitops`)              |
-| `__CHART_REPO_URL__`    | Helm chart repository URL for the `app-deployer` chart |
 
 
 ---
@@ -331,20 +329,33 @@ The local template files use these placeholders which `push-template.sh` replace
 │   ├── push-template.sh                           # Push template to GitLab on a fresh cluster
 │   └── enable-template-lifecycle.sh               # Enable automated template lifecycle management
 └── templates/
-    └── python-app/
+    └── quarkus-app/
         ├── template.yaml                          # Backstage scaffolder definition (versioned)
         ├── skeleton/                              # App source code skeleton
-        │   ├── app.py                             # Flask app
-        │   ├── requirements.txt                   # Python dependencies
-        │   ├── Containerfile                      # Container build (UBI9 Python 3.12)
+        │   ├── pom.xml                            # Maven project (Quarkus 3.15.1)
+        │   ├── Containerfile                      # Single-stage (UBI9 OpenJDK 21 runtime), packages pipeline build output
+        │   ├── .dockerignore
         │   ├── catalog-info.yaml                  # Backstage component (with scaffoldedFrom)
-        │   └── .gitignore
+        │   ├── .gitignore
+        │   └── src/
+        │       └── main/
+        │           ├── java/org/acme/
+        │           │   └── GreetingResource.java  # JAX-RS endpoint (/)
+        │           └── resources/
+        │               └── application.properties # Quarkus configuration
         └── manifests/                             # GitOps manifests skeleton
             ├── argocd/
             │   ├── app-dev.yaml                   # ArgoCD Application for dev
             │   └── build.yaml                     # ArgoCD Application for build
             ├── app/
-            │   ├── Chart.yaml                     # Depends on app-deployer chart
+            │   ├── Chart.yaml                     # Standalone chart (no dependencies)
+            │   ├── templates/                     # Hand-crafted Helm templates
+            │   │   ├── _helpers.tpl
+            │   │   ├── namespace.yaml
+            │   │   ├── deployment.yaml
+            │   │   ├── service.yaml
+            │   │   ├── route.yaml
+            │   │   └── hpa.yaml                   # Only rendered when values.app.hpa.enabled
             │   └── values/
             │       ├── values-dev.yaml            # Dev: 1 replica, route enabled
             │       └── values-prod.yaml           # Prod: 2 replicas, HPA enabled
@@ -371,9 +382,9 @@ The local template files use these placeholders which `push-template.sh` replace
 
 ## Architecture
 
-The build pipeline uses **hand-crafted Helm templates** rather than depending on a shared `build-deployer` chart. This keeps the template self-contained and avoids modifying shared infrastructure for template-specific features like cross-namespace rollout-restart.
+Both the build pipeline and the app deployment use **hand-crafted, self-contained Helm templates** rather than depending on a shared chart from the GitLab Package Registry (the pattern used by the "Onboarding features on Parasol Insurance application" template). This keeps each template deployable without a separate published-chart prerequisite and avoids modifying shared infrastructure for template-specific features like cross-namespace rollout-restart.
 
-The app deployment wraps the shared `app-deployer` chart from the GitLab Package Registry, which handles Deployment, Service, Route, Namespace, HPA, and ServiceMonitor resources.
+An earlier revision had the app chart depend on a shared `app-deployer` chart via `dependencies:` in `Chart.yaml`. That chart was never published to the GitLab Package Registry on this demo cluster, so ArgoCD's `helm dependency build` failed with `chart not found` and the dev/prod namespaces were never created. The app chart now hand-crafts `Namespace`/`Deployment`/`Service`/`Route`/`HorizontalPodAutoscaler` templates directly, mirroring the build chart's existing self-contained approach — no external chart dependency required.
 
 ## Adding More Templates
 
@@ -384,4 +395,3 @@ The app deployment wraps the shared `app-deployer` chart from the GitLab Package
 5. Include `spec.scaffoldedFrom: template:default/<template-name>` in the skeleton's `catalog-info.yaml`
 6. Add the new template files to the `push-template.sh` `template_files` list
 7. Run `./scripts/push-template.sh` to deploy
-

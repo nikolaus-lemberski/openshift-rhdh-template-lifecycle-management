@@ -2,31 +2,31 @@ app:
   name: ${{ values.name }}
 
   namespace:
-    name: ${{ values.name }}-dev
+    name: ${{ values.name }}-prod
     istio:
       enabled: true
 
   image:
     repository: ${{ values.image_host }}/${{ values.image_organization }}/${{ values.image_name }}
-    tag: ${{ values.image_tag }}
+    tag: latest
 
-  environment: dev
-  runtime: python
+  environment: prod
+  runtime: quarkus
 
-  replicas: 1
+  replicas: 2
 
   readinessProbe:
     httpGet:
-      path: /
+      path: /q/health/ready
       port: 8080
-    initialDelaySeconds: 5
+    initialDelaySeconds: 10
     periodSeconds: 10
 
   livenessProbe:
     httpGet:
-      path: /
+      path: /q/health/live
       port: 8080
-    initialDelaySeconds: 10
+    initialDelaySeconds: 15
     periodSeconds: 20
 
   route:
@@ -34,5 +34,10 @@ app:
 
   waypoint:
     enabled: true
+
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
 
   vcsUri: "${{ values.source_repo }}"

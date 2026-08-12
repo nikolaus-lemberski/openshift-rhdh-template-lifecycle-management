@@ -20,4 +20,4 @@ spec:
   type: service
   lifecycle: development
   owner: ${{ values.owner }}
-  scaffoldedFrom: template:default/python-flask-app
+  scaffoldedFrom: template:default/quarkus-app
