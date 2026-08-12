@@ -338,14 +338,7 @@ Real Backstage/RHDH backends enforce auth on the catalog API by default, so an u
 The most reliable source for that token is a static service-to-service token RHDH already has configured — check `app-config-rhdh` for a `backend.auth.externalAccess` entry (e.g. `subject: api-clients`) and find the Secret backing its `token` env var:
 
 ```bash
-oc get deploy backstage-developer-hub -n rhdh -o json \
-  | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for c in d['spec']['template']['spec']['containers']:
-    for ef in c.get('envFrom', []):
-        print(c['name'], ef.get('secretRef', {}).get('name'))
-"
+oc get deploy backstage-developer-hub -n rhdh -o jsonpath='{range .spec.template.spec.containers[*]}{.name}:{range .envFrom[*]}{" "}{.secretRef.name}{end}{"\n"}{end}'
 ```
 
 Once you know which Secret and key back it (e.g. `backend-secret` / `BACKEND_SECRET`):
