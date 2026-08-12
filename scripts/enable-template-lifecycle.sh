@@ -18,6 +18,7 @@ set -euo pipefail
 #   2. Adds scaffolder.pullRequests.templateUpdate config to app-config
 #   3. Adds ArgoCD ignoreDifferences so the changes aren't reverted
 #   4. Restarts the RHDH pod to apply changes
+#   5. Verifies the plugin is actually loaded and running (not just configured)
 #
 # Usage:
 #   ./scripts/enable-template-lifecycle.sh
@@ -46,9 +47,18 @@ echo "==> Checking current dynamic-plugins ConfigMap..."
 DYNAMIC_PLUGINS_CM=$(oc get backstage -n "${RHDH_NAMESPACE}" -o jsonpath='{.items[0].spec.application.dynamicPluginsConfigMapName}' 2>/dev/null || echo "dynamic-plugins")
 echo "    ConfigMap name: ${DYNAMIC_PLUGINS_CM}"
 
+is_relation_processor_enabled() {
+  # Reads the ConfigMap fresh from the cluster every time it's called, rather
+  # than trusting a value cached earlier in the script — the whole point is to
+  # catch cases where a write silently didn't stick or got reverted later.
+  local current
+  current=$(oc get configmap "${DYNAMIC_PLUGINS_CM}" -n "${RHDH_NAMESPACE}" -o jsonpath='{.data.dynamic-plugins\.yaml}' 2>/dev/null || echo "")
+  echo "${current}" | grep -q "relation-processor" && echo "${current}" | grep -A 1 "relation-processor" | grep -q "disabled: false"
+}
+
 CURRENT_DYNAMIC=$(oc get configmap "${DYNAMIC_PLUGINS_CM}" -n "${RHDH_NAMESPACE}" -o jsonpath='{.data.dynamic-plugins\.yaml}')
 
-if echo "${CURRENT_DYNAMIC}" | grep -q "relation-processor" && echo "${CURRENT_DYNAMIC}" | grep -A 1 "relation-processor" | grep -q "disabled: false"; then
+if is_relation_processor_enabled; then
   echo "    Scaffolder relation processor already enabled in dynamic-plugins"
   DYNAMIC_NEEDS_UPDATE=false
 else
@@ -67,13 +77,16 @@ else
   APPCONFIG_NEEDS_UPDATE=true
 fi
 
-if [[ "${DYNAMIC_NEEDS_UPDATE}" == "false" && "${APPCONFIG_NEEDS_UPDATE}" == "false" ]]; then
+NEEDS_UPDATE=false
+[[ "${DYNAMIC_NEEDS_UPDATE}" == "true" || "${APPCONFIG_NEEDS_UPDATE}" == "true" ]] && NEEDS_UPDATE=true
+
+if [[ "${NEEDS_UPDATE}" == "false" ]]; then
   echo ""
-  echo "==> Everything is already configured. Nothing to do."
-  exit 0
+  echo "==> ConfigMaps already look correct. Skipping straight to a runtime check —"
+  echo "    a correct-looking ConfigMap doesn't guarantee the plugin is actually running."
 fi
 
-if [[ "${DRY_RUN}" == "true" ]]; then
+if [[ "${NEEDS_UPDATE}" == "true" && "${DRY_RUN}" == "true" ]]; then
   echo ""
   echo "==> DRY RUN: Would make the following changes:"
   [[ "${DYNAMIC_NEEDS_UPDATE}" == "true" ]] && echo "    - Enable scaffolder-relation-processor plugin in ${DYNAMIC_PLUGINS_CM} ConfigMap"
@@ -118,6 +131,17 @@ open('${TMPFILE}', 'w').write(content)
     --from-file="dynamic-plugins.yaml=${TMPFILE}" \
     --dry-run=client -o yaml | oc apply -f -
   rm -f "${TMPFILE}"
+
+  echo "    Confirming the write actually stuck..."
+  if ! is_relation_processor_enabled; then
+    echo ""
+    echo "ERROR: Applied the ConfigMap update, but re-reading it back from the cluster"
+    echo "       shows the relation-processor entry is still missing or disabled."
+    echo "       Something rejected or reverted the change immediately (e.g. an operator"
+    echo "       or GitOps controller managing this ConfigMap). Inspect manually:"
+    echo "       oc get configmap ${DYNAMIC_PLUGINS_CM} -n ${RHDH_NAMESPACE} -o jsonpath='{.data.dynamic-plugins\.yaml}' | grep -A2 relation-processor"
+    exit 1
+  fi
   echo "    Done"
 fi
 
@@ -148,12 +172,24 @@ open('${TMPFILE}', 'w').write(content)
     --from-file="app-config-rhdh.yaml=${TMPFILE}" \
     --dry-run=client -o yaml | oc apply -f -
   rm -f "${TMPFILE}"
+
+  echo "    Confirming the write actually stuck..."
+  APPLIED_APPCONFIG=$(oc get configmap app-config-rhdh -n "${RHDH_NAMESPACE}" -o jsonpath='{.data.app-config-rhdh\.yaml}')
+  if ! echo "${APPLIED_APPCONFIG}" | grep -q "templateUpdate"; then
+    echo ""
+    echo "ERROR: Applied the app-config-rhdh update, but re-reading it back shows"
+    echo "       'templateUpdate' is still missing. Something rejected or reverted it."
+    exit 1
+  fi
   echo "    Done"
 fi
 
 echo "==> Checking ArgoCD management..."
 if oc get application "${ARGOCD_APP_NAME}" -n "${ARGOCD_NAMESPACE}" &>/dev/null; then
-  echo "    RHDH is managed by ArgoCD, adding ignoreDifferences..."
+  echo "    RHDH is managed by ArgoCD, (re-)adding ignoreDifferences..."
+  # Re-applied unconditionally (even if it looks already configured) since a full
+  # resync of the Application manifest from Git can silently drop this patch,
+  # which then lets ArgoCD revert the ConfigMap changes above on the next sync.
   oc patch application "${ARGOCD_APP_NAME}" -n "${ARGOCD_NAMESPACE}" --type=merge -p '{
     "spec": {
       "ignoreDifferences": [
@@ -179,30 +215,78 @@ else
   echo "    No ArgoCD application found, skipping"
 fi
 
-echo "==> Restarting RHDH pod..."
-POD_NAME=$(oc get pods -n "${RHDH_NAMESPACE}" -o name | grep backstage-developer-hub | grep -v psql | head -1)
-if [[ -n "${POD_NAME}" ]]; then
-  oc delete "${POD_NAME}" -n "${RHDH_NAMESPACE}"
-  echo "    Waiting for new pod to be ready..."
-  oc rollout status deploy/backstage-developer-hub -n "${RHDH_NAMESPACE}" --timeout=300s
-  echo "    Done"
+restart_rhdh_pod() {
+  echo "==> Restarting RHDH pod..."
+  local pod_name
+  pod_name=$(oc get pods -n "${RHDH_NAMESPACE}" -o name | grep backstage-developer-hub | grep -v psql | head -1)
+  if [[ -n "${pod_name}" ]]; then
+    oc delete "${pod_name}" -n "${RHDH_NAMESPACE}"
+    echo "    Waiting for new pod to be ready..."
+    oc rollout status deploy/backstage-developer-hub -n "${RHDH_NAMESPACE}" --timeout=300s
+    echo "    Done"
+    return 0
+  else
+    echo "    WARNING: Could not find RHDH pod to restart"
+    return 1
+  fi
+}
+
+# Verifies the plugin is actually loaded by the running backend, not just
+# present in a ConfigMap somewhere. Polls for up to 60s instead of a single
+# fixed sleep, since plugin loading takes a few seconds after the pod reports
+# ready. Surfaces any relation-processor-related log lines it finds so a real
+# load failure (bad package path, crash, etc.) doesn't look identical to "not
+# checked yet".
+verify_plugin_loaded() {
+  echo "==> Verifying plugin loaded..."
+  local i logs related
+  for i in $(seq 1 12); do
+    logs=$(oc logs deploy/backstage-developer-hub -n "${RHDH_NAMESPACE}" -c backstage-backend --since=2m 2>/dev/null || echo "")
+    if echo "${logs}" | grep -qi "loaded dynamic backend plugin.*relation-processor"; then
+      echo "    Scaffolder relation processor plugin loaded successfully"
+      return 0
+    fi
+    related=$(echo "${logs}" | grep -i "relation-processor" || true)
+    sleep 5
+  done
+
+  echo ""
+  echo "ERROR: Plugin did not report as loaded within 60s."
+  if [[ -n "${related}" ]]; then
+    echo "    Related log lines found (may indicate why it failed to load):"
+    echo "${related}" | sed 's/^/    /'
+  else
+    echo "    No mention of relation-processor in backend logs at all — the ConfigMap"
+    echo "    change may not have reached the running pod. Check:"
+    echo "    oc get configmap ${DYNAMIC_PLUGINS_CM} -n ${RHDH_NAMESPACE} -o jsonpath='{.data.dynamic-plugins\.yaml}' | grep -A2 relation-processor"
+  fi
+  return 1
+}
+
+if [[ "${NEEDS_UPDATE}" == "true" ]]; then
+  restart_rhdh_pod || true
+  if ! verify_plugin_loaded; then
+    exit 1
+  fi
 else
-  echo "    WARNING: Could not find RHDH pod to restart"
+  # Config already looked correct going in, but that's exactly the situation
+  # that caused the original bug: a ConfigMap can look right while the running
+  # pod predates it, crashed on load, or never actually picked it up. Verify
+  # live; if it's not running, restart once and check again before giving up.
+  if ! verify_plugin_loaded; then
+    echo "    Config looks correct but the plugin isn't running — restarting once to recover..."
+    restart_rhdh_pod || true
+    if ! verify_plugin_loaded; then
+      echo ""
+      echo "ERROR: Plugin still not loaded after a restart, even though the ConfigMap"
+      echo "       looks correct. This needs manual investigation."
+      exit 1
+    fi
+  fi
 fi
 
 echo ""
-echo "==> Verifying plugin loaded..."
-sleep 5
-LOGS=$(oc logs deploy/backstage-developer-hub -n "${RHDH_NAMESPACE}" -c backstage-backend 2>/dev/null || echo "")
-if echo "${LOGS}" | grep -q "loaded dynamic backend plugin.*relation-processor"; then
-  echo "    Scaffolder relation processor plugin loaded successfully"
-else
-  echo "    WARNING: Could not confirm plugin loaded. Check logs with:"
-  echo "    oc logs deploy/backstage-developer-hub -n ${RHDH_NAMESPACE} -c backstage-backend | grep relation-processor"
-fi
-
-echo ""
-echo "==> Template lifecycle management is configured!"
+echo "==> Template lifecycle management is configured and verified running!"
 echo ""
 echo "    How it works:"
 echo "    1. Apps created from the template will have spec.scaffoldedFrom in their catalog-info.yaml"

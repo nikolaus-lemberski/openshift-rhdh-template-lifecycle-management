@@ -146,6 +146,8 @@ Open RHDH at `https://backstage-developer-hub-rhdh.<CLUSTER_SUBDOMAIN>` and navi
   - **Image Organization**: leave as `parasol` (or your Quay org)
 4. Click **Create**
 
+![Create a Quarkus Application from the Self-service form](img/1_create_project.png)
+
 The template scaffolds two GitLab repositories and bootstraps ArgoCD:
 
 | What             | Where                           |
@@ -153,6 +155,8 @@ The template scaffolds two GitLab repositories and bootstraps ArgoCD:
 | Source code      | `parasol/my-quarkus-app`        |
 | GitOps manifests | `parasol/my-quarkus-app-gitops` |
 | ArgoCD apps      | `rhdh-gitops` namespace         |
+
+![Scaffolder task publishing the source, GitOps manifests, and ArgoCD resources](img/2_scaffolder_pipeline.png)
 
 ### Step 2: Trigger the first pipeline run
 
@@ -176,6 +180,8 @@ Check progress in Developer Hub under the component's **CI** tab (Tekton plugin)
 ```bash
 oc get pipelineruns -n my-quarkus-app-build
 ```
+
+![Tekton pipeline run with build, ACS scan, SBOM, and rollout-restart tasks](img/3_build_pipeline.png)
 
 Once the pipeline completes, ArgoCD deploys the app to the dev namespace:
 
@@ -227,6 +233,8 @@ Wait ~5 minutes for the RHDH catalog to refresh and the plugin to detect the ver
 my-quarkus-app/template-upgrade-v1.1.0
 ```
 
+![Merge request opened by scaffolder-relation-processor with the pom.xml version diff](img/4_merge_request.png)
+
 The MR contains the diff between the old and new skeleton files — in this case, the Quarkus version change in `pom.xml`. Review it and merge to apply the update.
 
 If notifications are enabled, the entity owner also receives a notification in Developer Hub with a link to the MR.
@@ -237,6 +245,46 @@ If notifications are enabled, the entity owner also receives a notification in D
 - Conditional Jinja2 blocks (`{% if %}`) are stripped, which might cause unexpected formatting.
 - If the entity owner is a Group (not a User), the MR is created without an assigned reviewer.
 - The `notifications` plugin must be enabled for notifications to work (it is enabled by default on clusters provisioned with the orchestrator).
+
+### Troubleshooting: no merge request appears
+
+Work through these in order — each one rules out a layer.
+
+**1. Is the plugin actually loaded?**
+
+Enabling the plugin (`./scripts/enable-template-lifecycle.sh`) only guarantees a ConfigMap looks correct, not that the running pod picked it up. Confirm it's really loaded:
+
+```bash
+oc logs deploy/backstage-developer-hub -n rhdh -c backstage-backend | grep "loaded dynamic backend plugin.*relation-processor"
+```
+
+If nothing prints, the ConfigMap write may have been silently reverted (e.g. by an ArgoCD sync missing `ignoreDifferences`) or never applied. Re-run the enable script — it verifies this itself and now fails loudly instead of printing a false "configured!" banner.
+
+**2. Ignore the `events backend not found` warning in the logs**
+
+Right after the plugin loads, you'll likely see:
+
+```
+Event subscribe request failed with status 404, events backend not found. Will only receive events that were sent locally on this process.
+```
+
+This looks alarming but is expected and harmless in this setup: the plugin falls back to in-process event delivery, which is all it needs since the publisher (catalog processor) and subscriber (notification/PR handler) run in the same backend process. This is **not** the cause of a missing MR — don't spend time chasing it.
+
+**3. The real gotcha: the plugin must observe the version change live**
+
+The plugin only creates an MR when it sees a template's `backstage.io/template-version` *increase from a version it previously cached*. That cache is seeded the first time the plugin processes the template entity — if you bump the version and push it *before* enabling the plugin (or before restarting RHDH after enabling it), the plugin's first pass just records the new version as its baseline. No prior value to compare against means no change is detected, so **no MR is created for that transition, silently.**
+
+If you enabled lifecycle management after a version bump was already pushed and no MR shows up after waiting for a catalog refresh (~5 minutes), bump the version once more (e.g. `1.1.0` → `1.1.1`) and push again with `./scripts/push-template.sh`. Now that the plugin has a cached baseline, this transition will be observed live and should trigger the MR.
+
+**4. Still nothing after a live version bump?**
+
+Check for the plugin actually receiving the event and attempting the diff:
+
+```bash
+oc logs deploy/backstage-developer-hub -n rhdh -c backstage-backend --since=10m | grep -i "template update event\|scaffolder-relation-processor"
+```
+
+If you see `Received template update event for ...` but still no MR, the failure is downstream (GitLab token permissions, VCS integration config, or the `backstage.io/managed-by-location` annotation not being a `url:`-type location) — check the plugin's own troubleshooting notes for those cases.
 
 ---
 
